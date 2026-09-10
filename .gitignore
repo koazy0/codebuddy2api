@@ -1,0 +1,10 @@
+/codebuddy-gateway
+/codebuddy-gateway.exe
+*.pid
+*.log
+log/
+data/
+.idea/
+.vscode/
+*.db
+*.db-journal

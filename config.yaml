@@ -1,0 +1,99 @@
+system:
+    db: sqlite
+    listenAddr: "0.0.0.0:8088"
+
+gateway:
+    api-key: "sk-change-me"
+    admin-key: "sk-admin-change-me"
+    upstream: "https://copilot.tencent.com"
+    gzip: true
+    passthrough: true
+    inject-reasoning: false
+    timeout-seconds: 300
+    max-retries: 3
+    rotate: round_robin
+    trust-env-proxy: false
+    proxy: ""
+    model-alias:
+        - from: gpt-4
+          to: glm-5.1
+        - from: gpt-4o
+          to: glm-5.2
+        - from: gpt-3.5-turbo
+          to: glm-5.0-turbo
+
+codebuddy:
+    ide-type: CodeBuddyIDE
+    ide-version: "4.9.7"
+    product-version: "4.9.7"
+    product: SaaS
+    domain: www.codebuddy.cn
+    env-id: production
+    agent-intent: craft
+    default-max-tokens: 32000
+    billing-base: "https://www.codebuddy.cn"
+
+refresh:
+    enabled: true
+    cron: "0 3 * * *"
+    threshold-days: 30
+    timeout-seconds: 15
+
+watchdog:
+    enabled: true
+    interval-seconds: 300
+    fail-threshold: 3
+    cooldown-seconds: 600
+    health-check: true
+    sync-credit: true
+
+sqlite:
+    path: data/gateway.db
+    prefix: ""
+    singular: false
+    log-mode: error
+    max-idle-conns: 10
+    max-open-conns: 100
+    log-zap: false
+
+mysql:
+    path: 127.0.0.1
+    port: "3306"
+    config: charset=utf8mb4&parseTime=True&loc=Local
+    db-name: codebuddy_gateway
+    username: root
+    password: ""
+    prefix: ""
+    engine: ""
+    charset: utf8mb4
+    log-mode: error
+    max-idle-conns: 10
+    max-open-conns: 100
+    singular: false
+    log-zap: false
+
+pgsql:
+    path: 127.0.0.1
+    port: "5432"
+    config: sslmode=disable TimeZone=UTC
+    db-name: codebuddy_gateway
+    username: postgres
+    password: ""
+    prefix: ""
+    engine: ""
+    log-mode: error
+    max-idle-conns: 10
+    max-open-conns: 100
+    singular: false
+    log-zap: false
+
+zap:
+    level: info
+    prefix: '[CodeBuddyGateway]'
+    format: console
+    director: log
+    encode-level: LowercaseColorLevelEncoder
+    stacktrace-key: stacktrace
+    show-line: true
+    log-in-console: true
+    retention-day: -1

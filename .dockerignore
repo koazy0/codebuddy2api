@@ -1,0 +1,7 @@
+.git
+data
+log
+*.log
+*.pid
+codebuddy-gateway
+codebuddy-gateway.exe
