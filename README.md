@@ -60,7 +60,7 @@ New API 渠道类型选 **OpenAI**：
 
 - Base URL：`http://<host>:8088`
 - API Key：`GATEWAY_API_KEY`
-- 模型：`glm-5.2`、`hy3`、`deepseek-v4-flash`、`hunyuan-chat` 等，见 `GET /v1/models`
+- 模型：透传上游 `GET /v3/config`，以 `GET /v1/models` 为准
 
 ```bash
 curl http://127.0.0.1:8088/v1/chat/completions \

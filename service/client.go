@@ -100,6 +100,28 @@ func (c *UpstreamClient) RefreshToken(ctx context.Context, acc *model.Account) (
 	}, nil
 }
 
+func (c *UpstreamClient) FetchConfig(ctx context.Context, acc *model.Account) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(global.CORE_CONFIG.Gateway.UpstreamBase(), "/v3/config"), nil)
+	if err != nil {
+		return nil, err
+	}
+	applyCodeBuddyHeaders(req, acc.JWT, global.CORE_CONFIG.CodeBuddy.HeaderAgentIntent())
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("config http %d: %s", resp.StatusCode, clip(raw, 300))
+	}
+	return raw, nil
+}
+
 func (c *UpstreamClient) CheckAccount(ctx context.Context, acc *model.Account) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(global.CORE_CONFIG.Gateway.UpstreamBase(), "/v2/plugin/accounts"), nil)
 	if err != nil {
