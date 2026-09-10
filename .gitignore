@@ -8,3 +8,7 @@ data/
 .vscode/
 *.db
 *.db-journal
+secrets/
+config.local.yaml
+workbuddy-desktop-*.json
+*.local.json

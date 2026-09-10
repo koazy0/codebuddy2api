@@ -44,7 +44,11 @@ curl -X POST http://127.0.0.1:8088/admin/accounts \
   -d '{"name":"acc-1","jwt":"<accessToken>","refresh_token":"<refreshToken>"}'
 ```
 
-批量导入走 `POST /admin/accounts/import`。
+批量导入走 `POST /admin/accounts/import`，或：
+
+```bash
+python3 scripts/import_accounts.py ./account.json
+```
 
 ## 管理接口
 

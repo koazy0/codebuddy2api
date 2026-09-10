@@ -61,7 +61,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) {
 			continue
 		}
 
-		if ShouldRefresh(acc.JWT, threshold) {
+		if global.CORE_CONFIG.Refresh.Enabled && ShouldRefresh(acc.JWT, threshold) {
 			if err := w.refresher.RefreshAccount(ctx, &acc); err != nil {
 				global.CORE_LOG.Warn("watchdog refresh failed", zap.Uint("account_id", acc.ID), zap.Error(err))
 				w.markFail(&acc, "refresh failed: "+err.Error())

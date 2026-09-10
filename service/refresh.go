@@ -22,6 +22,9 @@ func NewRefresher(client *UpstreamClient) *Refresher {
 }
 
 func (r *Refresher) RefreshAccount(ctx context.Context, acc *model.Account) error {
+	if !global.CORE_CONFIG.Refresh.Enabled {
+		return fmt.Errorf("credential refresh is disabled")
+	}
 	if acc == nil {
 		return fmt.Errorf("account is nil")
 	}
