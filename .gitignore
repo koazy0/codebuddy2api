@@ -12,3 +12,5 @@ secrets/
 config.local.yaml
 workbuddy-desktop-*.json
 *.local.json
+.env
+.runtime-keys

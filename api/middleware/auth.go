@@ -47,6 +47,9 @@ func extractBearer(c *gin.Context) string {
 	if v := strings.TrimSpace(c.GetHeader("api-key")); v != "" {
 		return v
 	}
+	if v := strings.TrimSpace(c.GetHeader("X-Api-Key")); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(c.Query("api_key")); v != "" {
 		return v
 	}

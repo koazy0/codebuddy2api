@@ -1,44 +1,85 @@
 package core
 
 import (
-	"flag"
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"codebuddy-gateway/global"
 
 	"github.com/spf13/viper"
 )
 
-// Viper //
-// 优先级: 命令行 > 环境变量 > 默认值
-// Author [SliverHorn](https://github.com/SliverHorn)
 func Viper(path ...string) *viper.Viper {
-	var config string
-
-	if len(path) == 0 {
-		flag.StringVar(&config, "c", "", "choose config file.")
-		flag.Parse()
-		if config == "" { // 判断命令行参数是否为空
-			config = "config.yaml"
-		} else { // 命令行参数不为空 将值赋值于config
-			fmt.Printf("您正在使用命令行的-c参数传递的值,config的路径为%s\n", config)
-		}
-	} else { // 函数传递的可变参数的第一个值赋值于config
-		config = path[0]
-		fmt.Printf("您正在使用func Viper()传递的值,config的路径为%s\n", config)
+	config := "config.yaml"
+	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
+		config = strings.TrimSpace(path[0])
 	}
+
+	loadDotEnv(".env")
 
 	v := viper.New()
 	v.SetConfigFile(config)
 	v.SetConfigType("yaml")
-	err := v.ReadInConfig()
-	if err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		panic(fmt.Errorf("Fatal error config file: %s \n", err))
 	}
 
-	if err = v.Unmarshal(&global.CORE_CONFIG); err != nil {
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	v.AutomaticEnv()
+	_ = v.BindEnv("gateway.api-key", "GATEWAY_API_KEY", "API_KEY")
+	_ = v.BindEnv("gateway.admin-key", "GATEWAY_ADMIN_KEY", "ADMIN_KEY")
+	_ = v.BindEnv("system.listenAddr", "GATEWAY_LISTEN", "LISTEN_ADDR")
+
+	if err := v.Unmarshal(&global.CORE_CONFIG); err != nil {
 		panic(err)
 	}
-
 	return v
+}
+
+func ApplyKeyOverrides(apiKey, adminKey string) {
+	if v := strings.TrimSpace(apiKey); v != "" {
+		global.CORE_CONFIG.Gateway.APIKey = v
+	}
+	if v := strings.TrimSpace(adminKey); v != "" {
+		global.CORE_CONFIG.Gateway.AdminKey = v
+	}
+}
+
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(line[7:])
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
 }
