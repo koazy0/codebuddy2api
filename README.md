@@ -10,6 +10,20 @@
 - Claude Code / CC Switch → `POST /v1/messages`
 - Cherry Studio / ZCode / LobeChat / NextChat / Open WebUI → `POST /v1/chat/completions`
 
+## 特色
+
+单二进制 Go 网关，不做用户系统、不做计费面板。核心是把 CodeBuddy 登录态转成标准 API，并把账号、票据、额度自己养起来。
+
+- **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
+- **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
+- **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
+- **官方登录入库**：`auth login` 走 `POST /v2/plugin/auth/state`，再轮询 `GET /v2/plugin/auth/token`；JSON 导入按 jwt / username upsert。
+- **刷新票据**：`POST /v2/plugin/auth/token/refresh`。默认每天 03:00 扫描，JWT 剩余不足 30 天就续；请求前也会预刷新。
+- **看门狗**：默认 300 秒一轮。健康检查、同步额度、连续失败 3 次进冷却，冷却到期自动重新启用。
+- **额度账本**：每月再生额度优先，再用一次性额度；看门狗定期从上游修正余额，每次对话同时记 token 和积分。
+- **用量统计**：输入/输出 token、缓存命中、首 token、延迟、TPS、额度来源，走 `/admin/usage` 和 `/admin/usage/summary`。
+- **存储可选**：默认 SQLite，可切 MySQL / PostgreSQL。
+
 ## 快速开始
 
 需要 Go 1.25+ 和 gcc（SQLite 走 CGO）。
@@ -125,6 +139,35 @@ curl http://127.0.0.1:8088/v1/messages \
 
 也兼容原来的脚本：`python3 scripts/import_accounts.py ./account.json`。
 管理接口 `POST /admin/accounts/import` 仍然可用。
+
+凭证入库后由刷新任务和看门狗继续维护，不必每次请求前手动续。
+
+## 定时维护
+
+登录拿到的 token 不会一直有效。打开 `refresh` 和 `watchdog` 后，网关自己续票据、对余额、把坏号冷却。
+
+```yaml
+refresh:
+    enabled: true
+    cron: "0 3 * * *"
+    threshold-days: 30
+
+watchdog:
+    enabled: true
+    interval-seconds: 300
+    fail-threshold: 3
+    cooldown-seconds: 600
+    health-check: true
+    sync-credit: true
+```
+
+也可手动触发：
+
+```bash
+curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/admin/refresh
+curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/admin/sync-credit
+curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/admin/watchdog
+```
 
 ## 管理接口
 
