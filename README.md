@@ -89,11 +89,42 @@ curl http://127.0.0.1:8088/v1/messages \
 
 ## 导入账号
 
+上游用的是 CodeBuddy 登录态，不是 OpenAI Key。用 CLI 拿凭证并入库即可，不必先启动服务。
+
+### 网页 / 扫码登录
+
 ```bash
-python3 scripts/import_accounts.py ./account.json
+./codebuddy-gateway auth login
 ```
 
-或 `POST /admin/accounts`，Header 用 admin-key。
+流程：
+
+1. 向 CodeBuddy 申请登录链接：`POST /v2/plugin/auth/state`
+2. 浏览器打开链接，完成登录
+3. 轮询 `GET /v2/plugin/auth/token` 拿到 `accessToken` / `refreshToken`
+4. 写入本地数据库
+
+常用参数：
+
+```bash
+./codebuddy-gateway auth login --no-browser          # 只打印链接
+./codebuddy-gateway auth login --out creds.json      # 同时保存 JSON
+./codebuddy-gateway auth login --no-save             # 只拿 token，不入库
+./codebuddy-gateway auth login --platform desktop    # 默认 desktop，也可 CLI
+```
+
+### 从 JSON 导入
+
+桌面端导出的 JSON，或上一步 `--out` 的文件：
+
+```bash
+./codebuddy-gateway account import ./account.json
+./codebuddy-gateway account import ./dir-of-json --dry-run
+./codebuddy-gateway account list
+```
+
+也兼容原来的脚本：`python3 scripts/import_accounts.py ./account.json`。
+管理接口 `POST /admin/accounts/import` 仍然可用。
 
 ## 管理接口
 

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"strings"
-	"time"
 
 	"codebuddy-gateway/api/response"
 	"codebuddy-gateway/model"
@@ -76,34 +75,6 @@ func publicAccount(acc model.Account) gin.H {
 	}
 }
 
-func fillAccountFromJWT(acc *model.Account) {
-	if acc.JWT == "" {
-		return
-	}
-	acc.JWT = strings.TrimPrefix(strings.TrimSpace(acc.JWT), "Bearer ")
-	if claims, err := service.ParseJWTClaims(acc.JWT); err == nil {
-		if acc.Username == "" {
-			acc.Username = claims.PreferredUsername
-		}
-		if acc.Name == "" {
-			if claims.PreferredUsername != "" {
-				acc.Name = claims.PreferredUsername
-			} else {
-				acc.Name = claims.Sub
-			}
-		}
-		if claims.Exp > 0 {
-			t := time.Unix(claims.Exp, 0)
-			acc.JWTExpiresAt = &t
-		}
-	}
-	if acc.RefreshToken != "" {
-		if exp, err := service.JWTExpiry(acc.RefreshToken); err == nil {
-			acc.RefreshExpiresAt = &exp
-		}
-	}
-}
-
 func ListAccounts(c *gin.Context) {
 	list, err := model.ListAccounts()
 	if err != nil {
@@ -143,7 +114,7 @@ func CreateAccount(c *gin.Context) {
 		acc.OnetimeCreditRemain = acc.OnetimeCreditTotal
 	}
 	acc.CreditRemain = acc.MonthlyCreditRemain + acc.OnetimeCreditRemain
-	fillAccountFromJWT(acc)
+	service.HydrateAccount(acc)
 	if err := model.CreateAccount(acc); err != nil {
 		response.Fail(c, err.Error())
 		return
@@ -182,7 +153,7 @@ func ImportAccounts(c *gin.Context) {
 			acc.OnetimeCreditRemain = acc.OnetimeCreditTotal
 		}
 		acc.CreditRemain = acc.MonthlyCreditRemain + acc.OnetimeCreditRemain
-		fillAccountFromJWT(acc)
+		service.HydrateAccount(acc)
 		if err := model.CreateAccount(acc); err != nil {
 			response.Fail(c, err.Error())
 			return
@@ -207,11 +178,11 @@ func UpdateAccount(c *gin.Context) {
 	}
 	if req.JWT != nil {
 		acc.JWT = strings.TrimSpace(*req.JWT)
-		fillAccountFromJWT(acc)
+		service.HydrateAccount(acc)
 	}
 	if req.RefreshToken != nil {
 		acc.RefreshToken = strings.TrimSpace(*req.RefreshToken)
-		fillAccountFromJWT(acc)
+		service.HydrateAccount(acc)
 	}
 	if req.SessionCookie != nil {
 		acc.SessionCookie = strings.TrimSpace(*req.SessionCookie)

@@ -23,6 +23,8 @@ func init() {
 	rootCmd.PersistentFlags().String("api-key", "", "downstream OpenAI API key, overrides config and env")
 	rootCmd.PersistentFlags().String("admin-key", "", "admin API key, overrides config and env")
 	rootCmd.AddCommand(command.NewServerCommand())
+	rootCmd.AddCommand(command.NewAuthCommand())
+	rootCmd.AddCommand(command.NewAccountCommand())
 }
 
 func Execute() {

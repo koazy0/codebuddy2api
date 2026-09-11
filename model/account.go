@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"codebuddy-gateway/global"
@@ -70,6 +71,32 @@ func DeleteAccount(id uint) error {
 func GetAccountByID(id uint) (*Account, error) {
 	var acc Account
 	err := MustDB().First(&acc, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &acc, nil
+}
+
+func GetAccountByUsername(username string) (*Account, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var acc Account
+	err := MustDB().Where("username = ?", username).Order("id asc").First(&acc).Error
+	if err != nil {
+		return nil, err
+	}
+	return &acc, nil
+}
+
+func GetAccountByJWT(jwt string) (*Account, error) {
+	jwt = strings.TrimSpace(jwt)
+	if jwt == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var acc Account
+	err := MustDB().Where("jwt = ?", jwt).Order("id asc").First(&acc).Error
 	if err != nil {
 		return nil, err
 	}
