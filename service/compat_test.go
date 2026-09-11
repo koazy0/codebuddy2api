@@ -224,3 +224,128 @@ func TestCollectSSEToolCalls(t *testing.T) {
 		t.Fatalf("finish=%s", result.FinishReason)
 	}
 }
+
+func TestDeveloperRoleMapsToSystem(t *testing.T) {
+	global.CORE_CONFIG.Gateway = config.Gateway{Passthrough: true}
+	meta, err := PrepareResponsesBody([]byte(`{
+		"model":"glm-5.2",
+		"instructions":"base",
+		"input":[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev rules"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(meta.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages=%v", msgs)
+	}
+	dev, _ := msgs[1].(map[string]any)
+	if dev["role"] != "system" || dev["content"] != "dev rules" {
+		t.Fatalf("developer mapped=%v", dev)
+	}
+}
+
+func TestSanitizeCodexFingerprint(t *testing.T) {
+	global.CORE_CONFIG.Gateway = config.Gateway{Passthrough: true}
+	prefix := "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful."
+	payload := map[string]any{
+		"model":        "deepseek-v4.1-flash",
+		"instructions": prefix + " Keep secrets.",
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "developer",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "Use Codex CLI with OpenAI."},
+				},
+			},
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "Codex CLI please"},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := PrepareResponsesBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(meta.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages=%v", msgs)
+	}
+	sys := msgs[0].(map[string]any)["content"].(string)
+	if strings.Contains(sys, "Codex CLI") || strings.Contains(sys, "OpenAI") || strings.Contains(sys, "Codex") {
+		t.Fatalf("system still fingerprinted: %s", sys)
+	}
+	if !strings.Contains(sys, "Keep secrets.") {
+		t.Fatalf("system lost remainder: %s", sys)
+	}
+	dev := msgs[1].(map[string]any)["content"].(string)
+	if strings.Contains(dev, "Codex") || strings.Contains(dev, "OpenAI") {
+		t.Fatalf("developer still fingerprinted: %s", dev)
+	}
+	user := msgs[2].(map[string]any)["content"].(string)
+	if user != "Codex CLI please" {
+		t.Fatalf("user content should stay intact: %s", user)
+	}
+}
+
+func TestIsUnapprovedChannel(t *testing.T) {
+	if !isUnapprovedChannel([]byte(`{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`)) {
+		t.Fatal("expected 11128 to match")
+	}
+	if isUnapprovedChannel([]byte(`{"code":0,"msg":"ok"}`)) {
+		t.Fatal("false positive")
+	}
+}
+
+func TestConvertNamespaceAndCustomTools(t *testing.T) {
+	global.CORE_CONFIG.Gateway = config.Gateway{Passthrough: true}
+	meta, err := PrepareResponsesBody([]byte(`{
+		"model":"deepseek-v4.1-flash",
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[
+			{"type":"function","name":"wait","parameters":{"type":"object"}},
+			{"type":"custom","name":"exec","description":"run command","format":{"type":"grammar"}},
+			{"type":"namespace","name":"multi_agent_v1","tools":[
+				{"type":"function","name":"spawn_agent","description":"spawn","parameters":{"type":"object"}}
+			]},
+			{"type":"web_search"}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(meta.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := body["tools"].([]any)
+	names := make([]string, 0, len(tools))
+	for _, item := range tools {
+		fn := item.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	joined := strings.Join(names, ",")
+	if joined != "wait,exec,multi_agent_v1__spawn_agent" {
+		t.Fatalf("tools=%s full=%v", joined, tools)
+	}
+}

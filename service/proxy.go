@@ -59,6 +59,7 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 			body["reasoning_summary"] = "auto"
 		}
 	}
+	sanitizeUpstreamChat(body)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -227,7 +228,11 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Sprintf("upstream %d: %s", resp.StatusCode, clip(raw, 200))
-			p.rotator.MarkFailure(acc, lastErr)
+			if !isUnapprovedChannel(raw) {
+				p.rotator.MarkFailure(acc, lastErr)
+			} else {
+				global.CORE_LOG.Warn("upstream rejected unapproved channel", zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
+			}
 			if resp.StatusCode >= 500 {
 				continue
 			}

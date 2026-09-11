@@ -84,6 +84,19 @@ func responsesToChat(raw []byte) (map[string]any, error) {
 	return chat, nil
 }
 
+func normalizeUpstreamRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "developer", "system":
+		return "system"
+	case "assistant":
+		return "assistant"
+	case "tool":
+		return "tool"
+	default:
+		return "user"
+	}
+}
+
 func convertResponsesInput(v any) []any {
 	if v == nil {
 		return nil
@@ -149,9 +162,7 @@ func convertResponsesInput(v any) []any {
 			continue
 		default:
 			flush()
-			if role == "" {
-				role = "user"
-			}
+			role = normalizeUpstreamRole(role)
 			content := convertResponsesContent(m["content"])
 			if content == nil || content == "" {
 				if t := asString(m["text"]); t != "" {
@@ -241,37 +252,98 @@ func convertResponsesTools(v any) any {
 	}
 	out := make([]any, 0, len(arr))
 	for _, item := range arr {
-		m, _ := item.(map[string]any)
-		if m == nil {
-			continue
-		}
-		if _, ok := m["function"]; ok {
-			out = append(out, m)
-			continue
-		}
-		typ := asString(m["type"])
-		if typ != "" && typ != "function" {
-			continue
-		}
-		name := asString(m["name"])
-		if name == "" {
-			continue
-		}
-		fn := map[string]any{"name": name}
-		if d, ok := m["description"]; ok {
-			fn["description"] = d
-		}
-		if p, ok := m["parameters"]; ok {
-			fn["parameters"] = p
-		} else if p, ok := m["input_schema"]; ok {
-			fn["parameters"] = p
-		}
-		out = append(out, map[string]any{"type": "function", "function": fn})
+		out = append(out, convertOneResponsesTool(item, "")...)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func convertOneResponsesTool(item any, prefix string) []any {
+	m, _ := item.(map[string]any)
+	if m == nil {
+		return nil
+	}
+	if _, ok := m["function"]; ok {
+		return []any{m}
+	}
+	typ := asString(m["type"])
+	switch typ {
+	case "namespace":
+		childPrefix := asString(m["name"])
+		if prefix != "" && childPrefix != "" {
+			childPrefix = prefix + "__" + childPrefix
+		}
+		nested, _ := m["tools"].([]any)
+		out := make([]any, 0, len(nested))
+		for _, child := range nested {
+			out = append(out, convertOneResponsesTool(child, childPrefix)...)
+		}
+		return out
+	case "custom":
+		if fn := customToolToFunction(m, prefix); fn != nil {
+			return []any{fn}
+		}
+		return nil
+	case "", "function":
+		if fn := functionToolFromMap(m, prefix); fn != nil {
+			return []any{fn}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func functionToolFromMap(m map[string]any, prefix string) map[string]any {
+	name := asString(m["name"])
+	if name == "" {
+		return nil
+	}
+	if prefix != "" {
+		name = prefix + "__" + name
+	}
+	fn := map[string]any{"name": name}
+	if d, ok := m["description"]; ok {
+		fn["description"] = d
+	}
+	if p, ok := m["parameters"]; ok {
+		fn["parameters"] = p
+	} else if p, ok := m["input_schema"]; ok {
+		fn["parameters"] = p
+	}
+	return map[string]any{"type": "function", "function": fn}
+}
+
+func customToolToFunction(m map[string]any, prefix string) map[string]any {
+	name := asString(m["name"])
+	if name == "" {
+		return nil
+	}
+	if prefix != "" {
+		name = prefix + "__" + name
+	}
+	desc := asString(m["description"])
+	if desc == "" {
+		desc = "Custom tool " + name
+	}
+	paramName := "input"
+	if name == "exec" || strings.HasSuffix(name, "__exec") {
+		paramName = "cmd"
+	}
+	fn := map[string]any{
+		"name":        name,
+		"description": desc,
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				paramName: map[string]any{"type": "string"},
+			},
+			"required": []any{paramName},
+		},
+	}
+	return map[string]any{"type": "function", "function": fn}
 }
 
 func convertResponsesToolChoice(v any) any {

@@ -14,6 +14,7 @@
 
 单二进制 Go 网关，不做用户系统、不做计费面板。核心是把 CodeBuddy 登录态转成标准 API，并把账号、票据、额度自己养起来。
 
+- **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：清洗系统提示里的渠道指纹，避开上游 `11128 unapproved channel`；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时不把账号打进冷却。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，而不是只会空聊或报 503。
 - **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
 - **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
 - **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
@@ -73,7 +74,7 @@ Header 用 `Authorization: Bearer <api-key>`，也认 `api-key` / `X-Api-Key`。
 | 客户端 | Base URL | 协议 |
 |------|----------|------|
 | Cherry Studio / New API / Open WebUI | `http://<host>:8088` 或 `http://<host>:8088/v1` | `POST /v1/chat/completions` |
-| Codex CLI | `http://<host>:8088/v1` | `POST /v1/responses` |
+| Codex CLI | `http://<host>:8088/v1` | `POST /v1/responses`（见下方专节） |
 | Claude Code / CC Switch | `http://<host>:8088` | `POST /v1/messages` |
 
 模型列表：`GET /v1/models`（透传上游 `GET /v3/config`）。
@@ -100,6 +101,33 @@ curl http://127.0.0.1:8088/v1/messages \
 ```
 
 健康检查：`GET /healthz`（无需 Key）。
+
+## Codex CLI
+
+Codex 走 `wire_api = "responses"`。网关会把请求收成上游 `/v2/chat/completions`，并专门处理 Codex 才会带的结构：
+
+- 系统 / developer 提示里的 `Codex CLI` / `OpenAI` / `Codex` 渠道指纹会改写；用户原文不动。
+- `namespace` 工具展成 `multi_agent_v1__spawn_agent` 这类 function；`custom` 工具（如 `exec`、`apply_patch`）收成带 `cmd` / `input` 的 function。只丢 `web_search` 这类上游没有的类型。
+- 上游若仍返回 `11128`，只记日志，不冷却账号。
+
+`~/.codex/config.toml` 示例：
+
+```toml
+model_provider = "codebuddy2api"
+model = "deepseek-v4.1-flash"
+model_context_window = 1000000
+model_max_output_tokens = 32000
+
+[model_providers.codebuddy2api]
+name = "codebuddy2api"
+base_url = "http://127.0.0.1:8088/v1"
+env_key = "CODEBUDDY2API_KEY"
+experimental_bearer_token = "sk-your-key"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+`GET /v1/models` 能看到当前账号可用的模型，按需把 `model` 换成 `glm-5.2`、`kimi-k2.7` 等。自定义 `model_catalog_json` 时不要照抄 GPT-5.6 的 `tool_mode = code_mode_only`，否则 Codex 会改成 custom `exec` grammar，工具列表只剩 `wait`。
 
 ## 导入账号
 
