@@ -292,15 +292,15 @@ func TestSanitizeCodexFingerprint(t *testing.T) {
 		t.Fatalf("messages=%v", msgs)
 	}
 	sys := msgs[0].(map[string]any)["content"].(string)
-	if strings.Contains(sys, "Codex CLI") || strings.Contains(sys, "OpenAI") || strings.Contains(sys, "Codex") {
-		t.Fatalf("system still fingerprinted: %s", sys)
+	if strings.Contains(sys, "open source project led by OpenAI") {
+		t.Fatalf("system still has WAF fingerprint: %s", sys[:200])
 	}
-	if !strings.Contains(sys, "Keep secrets.") {
-		t.Fatalf("system lost remainder: %s", sys)
+	if !strings.Contains(sys, "Codex CLI") || !strings.Contains(sys, "Keep secrets.") {
+		t.Fatalf("native Codex identity or remainder lost: %s", sys)
 	}
 	dev := msgs[1].(map[string]any)["content"].(string)
-	if strings.Contains(dev, "Codex") || strings.Contains(dev, "OpenAI") {
-		t.Fatalf("developer still fingerprinted: %s", dev)
+	if dev != "Use Codex CLI with OpenAI." {
+		t.Fatalf("developer should stay intact: %s", dev)
 	}
 	user := msgs[2].(map[string]any)["content"].(string)
 	if user != "Codex CLI please" {

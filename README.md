@@ -14,7 +14,7 @@
 
 单二进制 Go 网关，不做用户系统、不做计费面板。核心是把 CodeBuddy 登录态转成标准 API，并把账号、票据、额度自己养起来。
 
-- **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：清洗系统提示里的渠道指纹，避开上游 `11128 unapproved channel`；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时不把账号打进冷却。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，而不是只会空聊或报 503。
+- **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：只改写系统提示开头那段会被 WAF（`11128`）命中的自我介绍，其余 Codex 身份和工作方式原样透传；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时不把账号打进冷却。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，体感仍是原生 Codex。
 - **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
 - **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
 - **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
@@ -106,7 +106,7 @@ curl http://127.0.0.1:8088/v1/messages \
 
 Codex 走 `wire_api = "responses"`。网关会把请求收成上游 `/v2/chat/completions`，并专门处理 Codex 才会带的结构：
 
-- 系统 / developer 提示里的 `Codex CLI` / `OpenAI` / `Codex` 渠道指纹会改写；用户原文不动。
+- 只改写系统提示开头那段会被上游 WAF（`11128`）命中的 Codex CLI 自我介绍；其余身份说明、工作方式和用户原文都原样透传。
 - `namespace` 工具展成 `multi_agent_v1__spawn_agent` 这类 function；`custom` 工具（如 `exec`、`apply_patch`）收成带 `cmd` / `input` 的 function。只丢 `web_search` 这类上游没有的类型。
 - 上游若仍返回 `11128`，只记日志，不冷却账号。
 

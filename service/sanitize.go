@@ -4,7 +4,7 @@ import "strings"
 
 const (
 	codexFingerprintPrefix = "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful."
-	sanitizedAgentPrefix   = "You are a coding agent running in a terminal-based coding assistant. You are expected to be precise, safe, and helpful."
+	sanitizedAgentPrefix   = "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. You are expected to be precise, safe, and helpful."
 )
 
 func sanitizeUpstreamChat(body map[string]any) {
@@ -54,11 +54,7 @@ func sanitizeSystemText(s string) string {
 	if s == "" {
 		return s
 	}
-	s = strings.ReplaceAll(s, codexFingerprintPrefix, sanitizedAgentPrefix)
-	s = strings.ReplaceAll(s, "Codex CLI", "this assistant")
-	s = strings.ReplaceAll(s, "OpenAI", "the platform")
-	s = strings.ReplaceAll(s, "Codex", "this agent")
-	return s
+	return strings.ReplaceAll(s, codexFingerprintPrefix, sanitizedAgentPrefix)
 }
 
 func isUnapprovedChannel(raw []byte) bool {
