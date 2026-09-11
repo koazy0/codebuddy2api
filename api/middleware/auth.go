@@ -12,6 +12,13 @@ import (
 func OpenAIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !matchKey(extractBearer(c), global.CORE_CONFIG.Gateway.APIKey) {
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/messages") {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"type":  "error",
+					"error": gin.H{"type": "authentication_error", "message": "invalid api key"},
+				})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{"message": "invalid api key", "type": "invalid_request_error"},
 			})

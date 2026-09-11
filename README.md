@@ -1,8 +1,14 @@
 # CodeBuddy2API
 
-腾讯 CodeBuddy 的轻量 OpenAI 兼容反代。
+腾讯 CodeBuddy 的轻量反代。把桌面端登录态转成本机可直接用的 API。
 
-下游按标准 OpenAI 协议调用本服务，本服务再透传到 CodeBuddy。
+下游按标准协议调用本服务，本服务再透传到 CodeBuddy。
+
+适用：
+
+- Codex CLI → `POST /v1/responses`
+- Claude Code / CC Switch → `POST /v1/messages`
+- Cherry Studio / ZCode / LobeChat / NextChat / Open WebUI → `POST /v1/chat/completions`
 
 ## 快速开始
 
@@ -21,7 +27,7 @@ chmod +x run.sh
 
 ## 下游 API Key
 
-下游请求 `/v1/chat/completions` 时携带的 Key，三种方式都能配，优先级：
+三种方式都能配，优先级：
 
 **命令行 > 环境变量 / `.env` > `config.yaml`**
 
@@ -48,25 +54,35 @@ GATEWAY_ADMIN_KEY=sk-admin-your-key
 
 ## 下游怎么接
 
-本服务对下游就是一个 OpenAI 上游。
+Header 用 `Authorization: Bearer <api-key>`，也认 `api-key` / `X-Api-Key`。
 
-- Base URL：`http://<host>:8088`
-- SDK / 部分客户端：`http://<host>:8088/v1`
-- API Key：上面配的 `gateway.api-key`
-- 协议：`POST /v1/chat/completions`，`GET /v1/models`
-- Header：`Authorization: Bearer <api-key>`，也认 `api-key` / `X-Api-Key`
+| 客户端 | Base URL | 协议 |
+|------|----------|------|
+| Cherry Studio / New API / Open WebUI | `http://<host>:8088` 或 `http://<host>:8088/v1` | `POST /v1/chat/completions` |
+| Codex CLI | `http://<host>:8088/v1` | `POST /v1/responses` |
+| Claude Code / CC Switch | `http://<host>:8088` | `POST /v1/messages` |
 
-New API 渠道类型选 **OpenAI**：
-
-- Base URL：`http://<host>:8088`
-- API Key：`GATEWAY_API_KEY`
-- 模型：透传上游 `GET /v3/config`，以 `GET /v1/models` 为准
+模型列表：`GET /v1/models`（透传上游 `GET /v3/config`）。
 
 ```bash
+# OpenAI Chat Completions
 curl http://127.0.0.1:8088/v1/chat/completions \
   -H "Authorization: Bearer sk-your-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"你好"}]}'
+
+# OpenAI Responses（Codex CLI）
+curl http://127.0.0.1:8088/v1/responses \
+  -H "Authorization: Bearer sk-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.2","stream":true,"input":"你好"}'
+
+# Anthropic Messages（Claude Code）
+curl http://127.0.0.1:8088/v1/messages \
+  -H "x-api-key: sk-your-key" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.2","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
 健康检查：`GET /healthz`（无需 Key）。

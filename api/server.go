@@ -56,7 +56,7 @@ func corsMiddleware() gin.HandlerFunc {
 			origin = "*"
 		}
 		c.Header("Access-Control-Allow-Origin", origin)
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Token, X-Token, X-Admin-Key, api-key")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Token, X-Token, X-Admin-Key, api-key, x-api-key, X-Api-Key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, openai-beta, OpenAI-Beta")
 		c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, DELETE, PUT")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		if c.Request.Method == http.MethodOptions {

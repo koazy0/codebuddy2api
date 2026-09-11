@@ -2,7 +2,6 @@ package service
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,6 +28,7 @@ func NewProxy(client *UpstreamClient, rotator *Rotator, refresher *Refresher) *P
 }
 
 type ChatRequestMeta struct {
+	Protocol       Protocol
 	RequestedModel string
 	UpstreamModel  string
 	ClientStream   bool
@@ -64,6 +64,7 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 		return nil, err
 	}
 	return &ChatRequestMeta{
+		Protocol:       ProtocolChat,
 		RequestedModel: requested,
 		UpstreamModel:  upstream,
 		ClientStream:   clientStream,
@@ -83,15 +84,53 @@ func ResolveModelAlias(name string) string {
 func (p *Proxy) HandleChat(c *gin.Context) {
 	raw, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		openaiError(c, http.StatusBadRequest, "invalid request body")
+		gatewayError(c, ProtocolChat, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	meta, err := PrepareChatBody(raw)
 	if err != nil {
-		openaiError(c, http.StatusBadRequest, err.Error())
+		gatewayError(c, ProtocolChat, http.StatusBadRequest, err.Error())
 		return
 	}
 	p.relay(c, meta, "/v2/chat/completions")
+}
+
+func (p *Proxy) HandleResponses(c *gin.Context) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		gatewayError(c, ProtocolResponses, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	meta, err := PrepareResponsesBody(raw)
+	if err != nil {
+		gatewayError(c, ProtocolResponses, http.StatusBadRequest, err.Error())
+		return
+	}
+	p.relay(c, meta, "/v2/chat/completions")
+}
+
+func (p *Proxy) HandleMessages(c *gin.Context) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		gatewayError(c, ProtocolAnthropic, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	meta, err := PrepareAnthropicBody(raw)
+	if err != nil {
+		gatewayError(c, ProtocolAnthropic, http.StatusBadRequest, err.Error())
+		return
+	}
+	p.relay(c, meta, "/v2/chat/completions")
+}
+
+func (p *Proxy) HandleCountTokens(c *gin.Context) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		gatewayError(c, ProtocolAnthropic, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	c.Header("anthropic-version", "2023-06-01")
+	c.JSON(http.StatusOK, gin.H{"input_tokens": estimateTokenCount(raw)})
 }
 
 func (p *Proxy) HandleCompletions(c *gin.Context) {
@@ -125,6 +164,7 @@ func (p *Proxy) HandleCompletions(c *gin.Context) {
 		return
 	}
 	p.relay(c, &ChatRequestMeta{
+		Protocol:       ProtocolChat,
 		RequestedModel: requested,
 		UpstreamModel:  upstream,
 		ClientStream:   clientStream,
@@ -191,7 +231,7 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			if resp.StatusCode >= 500 {
 				continue
 			}
-			openaiError(c, http.StatusBadGateway, lastErr)
+			gatewayError(c, meta.Protocol, http.StatusBadGateway, lastErr)
 			p.recordUsage(acc, meta, start, resp.StatusCode, lastErr, nil)
 			return
 		}
@@ -208,7 +248,7 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 	if lastErr == "" {
 		lastErr = "no available codebuddy account"
 	}
-	openaiError(c, http.StatusServiceUnavailable, lastErr)
+	gatewayError(c, meta.Protocol, http.StatusServiceUnavailable, lastErr)
 }
 
 func (p *Proxy) doUpstream(ctx context.Context, acc *model.Account, path string, body []byte) (*http.Response, error) {
@@ -220,6 +260,12 @@ func (p *Proxy) doUpstream(ctx context.Context, acc *model.Account, path string,
 
 func (p *Proxy) writeResponse(c *gin.Context, resp *http.Response, meta *ChatRequestMeta) (*parsedUsage, error) {
 	defer resp.Body.Close()
+	if meta.Protocol == ProtocolResponses || meta.Protocol == ProtocolAnthropic {
+		if meta.ClientStream {
+			return p.writeCompatStream(c, resp, meta)
+		}
+		return p.writeCompatJSON(c, resp, meta)
+	}
 	if meta.ClientStream {
 		return p.writeStream(c, resp, meta)
 	}
@@ -270,17 +316,21 @@ func (p *Proxy) writeStream(c *gin.Context, resp *http.Response, meta *ChatReque
 }
 
 func (p *Proxy) writeJSON(c *gin.Context, resp *http.Response, meta *ChatRequestMeta) (*parsedUsage, error) {
-	agg, usage, err := aggregateSSE(resp.Body, meta.RequestedModel)
+	result, err := collectSSE(resp.Body, meta.RequestedModel)
 	if err != nil {
 		return nil, err
 	}
-	if usage != nil && usage.RequestID == "" {
-		usage.RequestID = resp.Header.Get("X-Request-Id")
+	if result.Usage != nil && result.Usage.RequestID == "" {
+		result.Usage.RequestID = resp.Header.Get("X-Request-Id")
+	}
+	agg, err := encodeChatJSON(result)
+	if err != nil {
+		return result.Usage, err
 	}
 	c.Header("Content-Type", "application/json")
 	c.Status(http.StatusOK)
 	_, writeErr := c.Writer.Write(agg)
-	return usage, writeErr
+	return result.Usage, writeErr
 }
 
 func rewriteSSELine(line, requestedModel string) (string, *parsedUsage) {
@@ -310,114 +360,15 @@ func rewriteSSELine(line, requestedModel string) (string, *parsedUsage) {
 }
 
 func aggregateSSE(r io.Reader, requestedModel string) ([]byte, *parsedUsage, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var id, modelName, finishReason string
-	var content bytes.Buffer
-	var reasoning bytes.Buffer
-	var usage *parsedUsage
-	created := time.Now().Unix()
-	streamStart := time.Now()
-	var firstTokenMs int64
-	for scanner.Scan() {
-		line := scanner.Text()
-		if firstTokenMs == 0 && lineHasGeneratedToken(line) {
-			firstTokenMs = time.Since(streamStart).Milliseconds()
-		}
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-		var chunk map[string]any
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if v, ok := chunk["id"].(string); ok && v != "" {
-			id = v
-		}
-		if v, ok := chunk["model"].(string); ok && v != "" {
-			modelName = v
-		}
-		if v, ok := chunk["created"].(float64); ok && v > 0 {
-			created = int64(v)
-		}
-		usage = mergeUsage(usage, extractUsage(chunk))
-		choices, _ := chunk["choices"].([]any)
-		for _, item := range choices {
-			choice, _ := item.(map[string]any)
-			if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
-				finishReason = fr
-			}
-			delta, _ := choice["delta"].(map[string]any)
-			if delta == nil {
-				if msg, ok := choice["message"].(map[string]any); ok {
-					delta = msg
-				}
-			}
-			if delta == nil {
-				continue
-			}
-			if v, ok := delta["content"].(string); ok {
-				content.WriteString(v)
-			}
-			if v, ok := delta["reasoning_content"].(string); ok {
-				reasoning.WriteString(v)
-			}
-		}
+	result, err := collectSSE(r, requestedModel)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, usage, err
+	encoded, err := encodeChatJSON(result)
+	if err != nil {
+		return nil, result.Usage, err
 	}
-	if requestedModel != "" {
-		modelName = requestedModel
-	}
-	if finishReason == "" {
-		finishReason = "stop"
-	}
-	if usage == nil {
-		usage = &parsedUsage{}
-	}
-	usage.FirstTokenMs = firstTokenMs
-	if id != "" {
-		usage.RequestID = id
-	}
-	message := map[string]any{
-		"role":    "assistant",
-		"content": content.String(),
-	}
-	if global.CORE_CONFIG.Gateway.Passthrough && reasoning.Len() > 0 {
-		message["reasoning_content"] = reasoning.String()
-	}
-	usageObj := map[string]any{
-		"prompt_tokens":     usage.PromptTokens,
-		"completion_tokens": usage.CompletionTokens,
-		"total_tokens":      usage.TotalTokens,
-	}
-	if global.CORE_CONFIG.Gateway.Passthrough {
-		usageObj["credit"] = usage.Credit
-		usageObj["prompt_cache_hit_tokens"] = usage.CacheHitTokens
-		usageObj["prompt_cache_miss_tokens"] = usage.CacheMissTokens
-		usageObj["completion_thinking_tokens"] = usage.ThinkingTokens
-	}
-	resp := map[string]any{
-		"id":      id,
-		"object":  "chat.completion",
-		"created": created,
-		"model":   modelName,
-		"choices": []any{
-			map[string]any{
-				"index":         0,
-				"message":       message,
-				"finish_reason": finishReason,
-			},
-		},
-		"usage": usageObj,
-	}
-	encoded, err := json.Marshal(resp)
-	return encoded, usage, err
+	return encoded, result.Usage, nil
 }
 
 func stripNonOpenAI(chunk map[string]any) {
