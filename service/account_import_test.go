@@ -62,3 +62,40 @@ func TestHydrateAccountFromJWT(t *testing.T) {
 		t.Fatalf("exp=%v", acc.JWTExpiresAt)
 	}
 }
+
+func TestParseImportedJSONConsoleDump(t *testing.T) {
+	raw := []byte(`{
+		"account": {"uid": "u-ana", "nickname": "Ana Renata", "type": "personal"},
+		"auth": {"accessToken": "jwt-ana", "refreshToken": "rt-ana", "tokenType": "Bearer", "domain": "www.codebuddy.cn"},
+		"accounts": [{"uid": "u-ana", "nickname": "Ana Renata", "type": "personal"}],
+		"allAccounts": [{"uid": "u-ana", "nickname": "Ana Renata"}],
+		"access_token": "jwt-ana",
+		"refresh_token": "rt-ana",
+		"uid": "u-ana",
+		"nickname": "Ana Renata",
+		"domain": "www.codebuddy.cn"
+	}`)
+	items, err := ParseImportedJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len=%d items=%+v", len(items), items)
+	}
+	if items[0].JWT != "jwt-ana" || items[0].RefreshToken != "rt-ana" || items[0].Name != "Ana Renata" {
+		t.Fatalf("item=%+v", items[0])
+	}
+}
+
+func TestParseImportedJSONArrayAndMissingToken(t *testing.T) {
+	items, err := ParseImportedJSON([]byte(`[{"name":"a","jwt":"jwt-1","refresh_token":"rt-1"},{"name":"b","accessToken":"jwt-2"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("len=%d", len(items))
+	}
+	if _, err := ParseImportedJSON([]byte(`{"accounts":[{"nickname":"no-token"}]}`)); err == nil {
+		t.Fatal("expected missing token error")
+	}
+}

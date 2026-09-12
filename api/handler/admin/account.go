@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"io"
 	"strings"
 
 	"codebuddy-gateway/api/response"
@@ -33,10 +34,6 @@ type accountUpdateReq struct {
 	Remark        *string  `json:"remark"`
 	Status        *string  `json:"status"`
 	CreditRemain  *float64 `json:"credit_remain"`
-}
-
-type accountImportReq struct {
-	Accounts []accountCreateReq `json:"accounts" binding:"required"`
 }
 
 func publicAccount(acc model.Account) gin.H {
@@ -122,45 +119,71 @@ func CreateAccount(c *gin.Context) {
 	response.Success(c, publicAccount(*acc))
 }
 
-func ImportAccounts(c *gin.Context) {
-	var req accountImportReq
-	if err := c.ShouldBindJSON(&req); err != nil {
+func parseImportedAccounts(c *gin.Context) ([]service.ImportedAccount, error) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	return service.ParseImportedJSON(raw)
+}
+
+func previewImportedAccounts(items []service.ImportedAccount) []gin.H {
+	out := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		acc := item.ToModel()
+		service.HydrateAccount(acc)
+		out = append(out, gin.H{
+			"name":               acc.Name,
+			"username":           acc.Username,
+			"jwt":                service.MaskToken(acc.JWT),
+			"refresh_token":      service.MaskToken(acc.RefreshToken),
+			"has_refresh":        acc.RefreshToken != "",
+			"has_session_cookie": acc.SessionCookie != "",
+			"remark":             acc.Remark,
+		})
+	}
+	return out
+}
+
+func PreviewImportAccounts(c *gin.Context) {
+	items, err := parseImportedAccounts(c)
+	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	created := make([]gin.H, 0, len(req.Accounts))
-	for _, item := range req.Accounts {
-		acc := &model.Account{
-			Name:                strings.TrimSpace(item.Name),
-			JWT:                 strings.TrimSpace(item.JWT),
-			RefreshToken:        strings.TrimSpace(item.RefreshToken),
-			SessionCookie:       strings.TrimSpace(item.SessionCookie),
-			Weight:              item.Weight,
-			Remark:              item.Remark,
-			Status:              item.Status,
-			MonthlyCreditTotal:  item.MonthlyCreditTotal,
-			MonthlyCreditRemain: item.MonthlyCreditRemain,
-			OnetimeCreditTotal:  item.OnetimeCreditTotal,
-			OnetimeCreditRemain: item.OnetimeCreditRemain,
-		}
-		if acc.JWT == "" {
-			continue
-		}
-		if acc.MonthlyCreditRemain == 0 && acc.MonthlyCreditTotal > 0 {
-			acc.MonthlyCreditRemain = acc.MonthlyCreditTotal
-		}
-		if acc.OnetimeCreditRemain == 0 && acc.OnetimeCreditTotal > 0 {
-			acc.OnetimeCreditRemain = acc.OnetimeCreditTotal
-		}
-		acc.CreditRemain = acc.MonthlyCreditRemain + acc.OnetimeCreditRemain
-		service.HydrateAccount(acc)
-		if err := model.CreateAccount(acc); err != nil {
+	response.Success(c, gin.H{"count": len(items), "accounts": previewImportedAccounts(items)})
+}
+
+func ImportAccounts(c *gin.Context) {
+	items, err := parseImportedAccounts(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	created, updated := 0, 0
+	out := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		acc, isNew, err := service.UpsertAccount(item.ToModel())
+		if err != nil {
 			response.Fail(c, err.Error())
 			return
 		}
-		created = append(created, publicAccount(*acc))
+		if acc == nil {
+			continue
+		}
+		if isNew {
+			created++
+		} else {
+			updated++
+		}
+		out = append(out, publicAccount(*acc))
 	}
-	response.Success(c, gin.H{"count": len(created), "accounts": created})
+	response.Success(c, gin.H{
+		"count":    created + updated,
+		"created":  created,
+		"updated":  updated,
+		"accounts": out,
+	})
 }
 
 func UpdateAccount(c *gin.Context) {

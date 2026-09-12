@@ -643,28 +643,66 @@ $("accountNew").onclick = () => accountForm(null);
 $("accountImport").onclick = () => {
   modal("批量导入账号", `
     <div class="body">
-      <p class="tiny">粘贴 CodeBuddy 导出的 JSON 数组，或 <code>{"accounts": [...]}</code>。</p>
-      <textarea id="frmImport" rows="12" style="width:100%" class="mono" placeholder='[{"name":"a","jwt":"..."}]'></textarea>
-      <div class="row" style="margin-top:10px;"><button id="frmImportSave" type="button">导入</button></div>
+      <p class="tiny">随便粘贴 CodeBuddy / 控制台 JSON。只抽 <code>accessToken</code> / <code>jwt</code> / <code>refreshToken</code> / <code>nickname</code> 这些关键字段。先识别，确认后再导入。</p>
+      <textarea id="frmImport" rows="12" style="width:100%" class="mono" placeholder='{"auth":{"accessToken":"...","refreshToken":"..."},"account":{"nickname":"Ana"}}'></textarea>
+      <div id="frmImportPreview" class="tiny" style="margin-top:10px">还没有识别。</div>
+      <div class="row" style="margin-top:10px;">
+        <button id="frmImportScan" type="button">识别账号</button>
+        <button id="frmImportSave" class="ghost" type="button" disabled>确认导入</button>
+      </div>
     </div>`);
-  $("frmImportSave").onclick = async () => {
+  let payload = null;
+  const previewBox = $("frmImportPreview");
+  const saveBtn = $("frmImportSave");
+  const resetPreview = () => {
+    payload = null;
+    saveBtn.disabled = true;
+    previewBox.textContent = "内容已改，请重新识别。";
+  };
+  $("frmImport").addEventListener("input", resetPreview);
+  $("frmImportScan").onclick = async () => {
     let parsed;
     try { parsed = JSON.parse($("frmImport").value); } catch (err) { flash("JSON 解析失败：" + err.message, false); return; }
-    const accounts = Array.isArray(parsed) ? parsed : (parsed.accounts || []);
-    if (!accounts.length) { flash("没有可导入的账号", false); return; }
-    const importBtn = $("frmImportSave");
-    if (importBtn.disabled) return;
-    importBtn.disabled = true;
+    const scanBtn = $("frmImportScan");
+    scanBtn.disabled = true;
+    saveBtn.disabled = true;
+    previewBox.textContent = "识别中...";
     try {
-      const data = await withFlash(async () => {
-        const res = await api("/admin/accounts/import", { method: "POST", body: JSON.stringify({ accounts: accounts }) });
-        flash("已导入 " + res.count + " 个账号", true);
-        return res;
+      const data = await api("/admin/accounts/import/preview", { method: "POST", body: JSON.stringify(parsed) });
+      const list = data.accounts || [];
+      if (!list.length) {
+        payload = null;
+        previewBox.textContent = "没有识别到 accessToken / jwt。";
+        flash("没有可导入的账号", false);
+        return;
+      }
+      payload = parsed;
+      saveBtn.disabled = false;
+      previewBox.innerHTML = "识别到 <b>" + list.length + "</b> 个账号：<br>" + list.map(item => {
+        const refresh = item.has_refresh ? ("refresh " + esc(item.refresh_token || "有")) : "无 refresh";
+        return "· " + esc(item.name || item.username || "imported") + "　jwt " + esc(item.jwt || "") + "　" + refresh;
+      }).join("<br>");
+      flash("识别到 " + list.length + " 个账号，确认后再导入", true);
+    } catch (err) {
+      payload = null;
+      previewBox.textContent = err.message || String(err);
+      flash(err.message || String(err), false);
+    } finally {
+      scanBtn.disabled = false;
+    }
+  };
+  saveBtn.onclick = async () => {
+    if (!payload) { flash("请先识别账号", false); return; }
+    if (saveBtn.disabled) return;
+    saveBtn.disabled = true;
+    try {
+      const res = await withFlash(async () => {
+        return api("/admin/accounts/import", { method: "POST", body: JSON.stringify(payload) });
       }, "");
+      flash("已导入 " + (res.created || 0) + " 个，更新 " + (res.updated || 0) + " 个", true);
       closeModal();
-      return data;
     } catch (err) { /* flash 已提示 */ } finally {
-      importBtn.disabled = false;
+      saveBtn.disabled = false;
     }
   };
 };

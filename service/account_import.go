@@ -57,22 +57,38 @@ func LoadImportedAccounts(path string) ([]ImportedAccount, error) {
 	if err != nil {
 		return nil, err
 	}
+	items, err := ParseImportedJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return items, nil
+}
+
+func ParseImportedJSON(raw []byte) ([]ImportedAccount, error) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return nil, fmt.Errorf("empty json")
+	}
 	var data any
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, fmt.Errorf("failed to read %s: %w", path, err)
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		return nil, fmt.Errorf("invalid json: %w", err)
 	}
 	items := extractImportedAccounts(data)
 	if len(items) == 0 {
-		return nil, fmt.Errorf("no jwt/accessToken found in %s", path)
+		return nil, fmt.Errorf("no jwt/accessToken found")
 	}
-	return dedupeImported(items), nil
+	return items, nil
 }
 
 func extractImportedAccounts(v any) []ImportedAccount {
 	var found []ImportedAccount
 	index := map[string]int{}
 	add := func(item *ImportedAccount) {
-		if item == nil || item.JWT == "" {
+		if item == nil {
+			return
+		}
+		item.JWT = strings.TrimPrefix(strings.TrimSpace(item.JWT), "Bearer ")
+		if item.JWT == "" {
 			return
 		}
 		if i, ok := index[item.JWT]; ok {
@@ -82,37 +98,24 @@ func extractImportedAccounts(v any) []ImportedAccount {
 		index[item.JWT] = len(found)
 		found = append(found, *item)
 	}
-	switch obj := v.(type) {
-	case []any:
-		for _, item := range obj {
-			for _, one := range extractImportedAccounts(item) {
-				cp := one
-				add(&cp)
+	var walk func(any, int)
+	walk = func(v any, depth int) {
+		if v == nil || depth > 12 {
+			return
+		}
+		switch obj := v.(type) {
+		case []any:
+			for _, item := range obj {
+				walk(item, depth+1)
+			}
+		case map[string]any:
+			add(extractOneAccount(obj))
+			for _, child := range obj {
+				walk(child, depth+1)
 			}
 		}
-	case map[string]any:
-		for _, key := range []string{"accounts", "allAccounts", "data", "items"} {
-			if child, ok := obj[key].([]any); ok {
-				for _, item := range child {
-					add(extractOneAccount(item))
-					if m, ok := item.(map[string]any); ok {
-						merged := map[string]any{}
-						for k, val := range m {
-							merged[k] = val
-						}
-						if auth, ok := m["auth"]; ok {
-							merged["auth"] = auth
-						}
-						if account, ok := m["account"]; ok {
-							merged["account"] = account
-						}
-						add(extractOneAccount(merged))
-					}
-				}
-			}
-		}
-		add(extractOneAccount(obj))
 	}
+	walk(v, 0)
 	return found
 }
 
@@ -124,20 +127,27 @@ func extractOneAccount(v any) *ImportedAccount {
 	auth, _ := obj["auth"].(map[string]any)
 	account, _ := obj["account"].(map[string]any)
 	jwt := pickString(
-		obj["jwt"], obj["access_token"], obj["accessToken"],
-		mapGet(auth, "accessToken"), mapGet(auth, "access_token"),
+		obj["jwt"], obj["access_token"], obj["accessToken"], obj["AccessToken"],
+		mapGet(auth, "accessToken"), mapGet(auth, "access_token"), mapGet(auth, "AccessToken"),
 	)
 	if jwt == "" {
 		return nil
 	}
 	refresh := pickString(
-		obj["refresh_token"], obj["refreshToken"],
-		mapGet(auth, "refreshToken"), mapGet(auth, "refresh_token"),
+		obj["refresh_token"], obj["refreshToken"], obj["RefreshToken"],
+		mapGet(auth, "refreshToken"), mapGet(auth, "refresh_token"), mapGet(auth, "RefreshToken"),
 	)
-	name := pickString(obj["name"], obj["nickname"], mapGet(account, "nickname"))
-	uid := pickString(obj["uid"], mapGet(account, "uid"), obj["username"])
+	name := pickString(
+		obj["name"], obj["nickname"], obj["Nickname"],
+		mapGet(account, "nickname"), mapGet(account, "Nickname"), mapGet(account, "name"),
+	)
+	uid := pickString(
+		obj["uid"], obj["userId"], obj["user_id"], obj["username"], obj["preferred_username"],
+		mapGet(account, "uid"), mapGet(account, "username"),
+	)
 	session := pickString(
 		obj["session_cookie"], obj["sessionCookie"], obj["session"], obj["cookie"],
+		mapGet(auth, "session"), mapGet(auth, "cookie"),
 	)
 	if name == "" {
 		name = uid

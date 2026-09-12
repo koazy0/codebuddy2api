@@ -90,6 +90,7 @@ func Health(c *gin.Context) {
 func RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/accounts", ListAccounts)
 	rg.POST("/accounts", CreateAccount)
+	rg.POST("/accounts/import/preview", PreviewImportAccounts)
 	rg.POST("/accounts/import", ImportAccounts)
 	rg.PUT("/accounts/:id", UpdateAccount)
 	rg.DELETE("/accounts/:id", DeleteAccount)
