@@ -18,16 +18,22 @@ import (
 
 type UpstreamClient struct {
 	httpClient *http.Client
+	// firstByteTimeout 只约束「上游是否在合理时间内开始响应」，
+	// 不限制流式响应持续多久，避免长回答被总超时掐断。
+	firstByteTimeout time.Duration
 }
 
 func NewUpstreamClient() *UpstreamClient {
 	cfg := global.CORE_CONFIG.Gateway
+	firstByteTimeout := time.Duration(cfg.Timeout()) * time.Second
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 15 * time.Second,
-		ForceAttemptHTTP2:   true,
+		// 只限制「等到响应头」的时间，不限制流式 body 的持续时间。
+		ResponseHeaderTimeout: firstByteTimeout,
+		ForceAttemptHTTP2:     true,
 	}
 	if !cfg.TrustEnvProxy {
 		transport.Proxy = nil
@@ -38,12 +44,15 @@ func NewUpstreamClient() *UpstreamClient {
 			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 	}
-	timeout := time.Duration(cfg.Timeout()) * time.Second
+	// 关键：http.Client.Timeout 是「整个请求 + 读完 body」的总超时，
+	// 流式对话一旦累计超过它就会被强制中断（表现就是「写着写着断了」）。
+	// 所以这里只保留首包/响应头超时，总超时留空。
 	return &UpstreamClient{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   timeout,
+			Timeout:   0,
 		},
+		firstByteTimeout: firstByteTimeout,
 	}
 }
 

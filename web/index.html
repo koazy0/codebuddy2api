@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeBuddy2API 控制台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div id="gate" class="gate">
+  <div class="box">
+    <h1 id="gateTitle" style="margin:0 0 8px;font-size:20px;">CodeBuddy2API</h1>
+    <p class="muted">输入面板密码或 Admin Key，进入账号、票据与 token 消耗面板。</p>
+    <div class="field">
+      <label>面板密码</label>
+      <input id="gatePassword" type="password" placeholder="在 config.yaml 的 dashboard.password 里设置" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label>Admin Key</label>
+      <input id="gateKey" type="password" placeholder="sk-admin-..." autocomplete="off">
+    </div>
+    <div class="row">
+      <button id="gateBtn" type="button">进入控制台</button>
+    </div>
+    <p id="gateErr" class="msg err"></p>
+    <p class="tiny">两者都配置时需同时正确；密码只存在服务端，登录后写入本机 localStorage。</p>
+  </div>
+</div>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1 id="pageTitle">CodeBuddy2API 控制台</h1>
+      <p>账号、票据刷新、token 消耗与缓存命中的统一面板</p>
+    </div>
+    <div class="keybox">
+      <button id="reloadBtn" type="button">刷新数据</button>
+      <button id="autoBtn" class="ghost" type="button">自动刷新：开</button>
+      <button id="logoutBtn" class="ghost" type="button">退出</button>
+    </div>
+  </header>
+  <p id="flash" class="msg"></p>
+  <section class="cards" id="cards"></section>
+
+  <div class="tabs" id="tabs">
+    <button data-tab="overview" class="active" type="button">概览</button>
+    <button data-tab="requests" type="button">请求记录</button>
+    <button data-tab="accounts" type="button">账号 / 票据</button>
+    <button data-tab="models" type="button">模型目录</button>
+    <button data-tab="settings" type="button">面板设置</button>
+  </div>
+
+  <section id="tab-overview">
+    <div class="grid-2">
+      <div class="panel">
+        <h2><span>每日 token 消耗</span><span class="tiny" id="dailyHint">最近 14 天</span></h2>
+        <div class="spark" id="dailyChart"></div>
+        <div class="legend"><span><i style="background:#2dd4bf"></i>输入 token</span><span><i style="background:#6366f1"></i>输出 token</span></div>
+      </div>
+      <div class="panel">
+        <h2>缓存命中</h2>
+        <div class="body" id="cachePanel"></div>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <h2><span>模型消耗 Top</span><span class="tiny">按请求数</span></h2>
+        <div class="bars" id="modelBars"></div>
+      </div>
+      <div class="panel">
+        <h2><span>账号消耗</span><span class="tiny">按请求数</span></h2>
+        <div class="bars" id="accountBars"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>票据刷新</h2>
+        <div class="body">
+          <div class="field"><label>上次刷新</label><div id="lastRefresh">—</div></div>
+          <div class="field"><label>下次刷新</label><div id="nextRefresh">—</div></div>
+          <div class="field">
+            <label>计划</label>
+            <select id="cronPreset">
+              <option value="0 3 * * *">每天 03:00</option>
+              <option value="0 0 * * *">每天 00:00</option>
+              <option value="0 */6 * * *">每 6 小时</option>
+              <option value="0 */12 * * *">每 12 小时</option>
+              <option value="0 * * * *">每小时</option>
+              <option value="*/30 * * * *">每 30 分钟</option>
+              <option value="custom">自定义 cron</option>
+            </select>
+          </div>
+          <div class="field"><label>Cron</label><input id="cronInput" class="mono" placeholder="0 3 * * *"></div>
+          <div class="row" style="margin-bottom:10px;">
+            <label class="tiny"><input id="refreshEnabled" type="checkbox" style="min-width:0;"> 启用定时刷新</label>
+          </div>
+          <div class="row">
+            <div class="field" style="margin:0;">
+              <label>剩余不足 N 天则刷新</label>
+              <input id="thresholdDays" type="number" min="1" style="min-width:110px;">
+            </div>
+            <div class="field" style="margin:0;">
+              <label>超时（秒）</label>
+              <input id="timeoutSeconds" type="number" min="1" style="min-width:110px;">
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="saveRefresh" type="button">保存刷新时间</button>
+            <button id="runRefresh" class="ghost" type="button">立即刷新票据</button>
+            <button id="syncCredit" class="ghost" type="button">同步额度</button>
+          </div>
+          <p class="tiny" style="margin-top:10px;">5 位 cron，按本机时区执行。保存后热更新并写回 config.yaml。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <h2><span>账号 / 票据</span><span class="tiny" id="accountHint"></span></h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>账号</th><th>状态</th><th>余额</th><th>已用</th><th>最近使用</th><th>票据</th></tr>
+            </thead>
+            <tbody id="accountBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-requests" class="hidden">
+    <div class="panel">
+      <h2>
+        <span>请求记录</span>
+        <span class="row">
+          <select id="usageAccount"><option value="">全部账号</option></select>
+          <select id="usageModel"><option value="">全部模型</option></select>
+          <select id="usageProtocol">
+            <option value="">全部协议</option>
+            <option value="chat">chat</option>
+            <option value="responses">responses</option>
+            <option value="anthropic">anthropic</option>
+          </select>
+          <select id="usageStatus">
+            <option value="">全部状态</option>
+            <option value="success">成功</option>
+            <option value="error">失败</option>
+          </select>
+          <select id="usageRange">
+            <option value="">全部时间</option>
+            <option value="1">最近 24 小时</option>
+            <option value="7">最近 7 天</option>
+            <option value="30">最近 30 天</option>
+          </select>
+          <input id="usageKeyword" placeholder="关键词 / request id" style="min-width:180px;">
+          <button id="usageFilter" class="ghost" type="button">查询</button>
+          <button id="usageReset" class="ghost" type="button">重置</button>
+          <button id="usageDelete" class="danger" type="button">删除筛选结果</button>
+        </span>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th><th>账号</th><th>协议</th><th>模型</th><th>输入</th><th>缓存命中</th>
+              <th>输出</th><th>积分</th><th>延迟</th><th>状态</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="usageBody"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span class="tiny" id="usageMeta"></span>
+        <select id="usagePageSize">
+          <option value="20">20 / 页</option>
+          <option value="50">50 / 页</option>
+          <option value="100">100 / 页</option>
+        </select>
+        <button id="prevPage" class="ghost" type="button">上一页</button>
+        <button id="nextPage" class="ghost" type="button">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-accounts" class="hidden">
+    <div class="panel">
+      <h2>
+        <span>账号与票据</span>
+        <span class="row">
+          <button id="accountNew" type="button">新增账号</button>
+          <button id="accountImport" class="ghost" type="button">粘贴 JSON 导入</button>
+          <button id="runWatchdog" class="ghost" type="button">跑一轮看门狗</button>
+        </span>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>账号</th><th>状态</th><th>余额（月 / 次）</th><th>已用</th><th>票据</th><th>最近使用</th><th>备注</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="accountFullBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-models" class="hidden">
+    <div class="panel">
+      <h2>
+        <span>模型目录</span>
+        <span class="row">
+          <button id="modelNew" type="button">新增模型</button>
+          <button id="modelsReload" class="ghost" type="button">重新加载</button>
+        </span>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>显示名</th><th>最大输入</th><th>最大输出</th><th>能力</th><th>启用</th><th>排序</th><th></th></tr>
+          </thead>
+          <tbody id="modelBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="hidden">
+    <div class="grid-2">
+      <div class="panel">
+        <h2><span>面板登录</span><span class="tiny" id="accessHint"></span></h2>
+        <div class="body">
+          <div class="field"><label>面板标题</label><input id="dashTitle" placeholder="CodeBuddy2API 控制台"></div>
+          <div class="field">
+            <label>面板密码</label>
+            <input id="dashPassword" type="password" placeholder="留空表示不修改，至少 6 位">
+          </div>
+          <div class="field">
+            <label>确认密码</label>
+            <input id="dashPassword2" type="password" placeholder="再输一次">
+          </div>
+          <div class="row" style="margin-bottom:10px;">
+            <label class="tiny"><input id="dashRequireAdmin" type="checkbox" style="min-width:0;"> 同时校验 Admin Key</label>
+          </div>
+          <div class="row">
+            <button id="saveAccess" type="button">保存</button>
+            <button id="clearPassword" class="ghost" type="button">清空面板密码</button>
+          </div>
+          <p class="tiny" style="margin-top:10px;">
+            密码写入 <code>config.yaml</code> 的 <code>dashboard.password</code>，落盘时自动转成 sha256 摘要；
+            关掉 Admin Key 校验前必须先设置面板密码，避免面板裸奔。
+          </p>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>运行信息</h2>
+        <div class="kv" id="runtimeInfo"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="box">
+    <h3><span id="modalTitle">详情</span><button id="modalClose" class="ghost" type="button">关闭</button></h3>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

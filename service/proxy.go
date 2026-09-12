@@ -33,6 +33,9 @@ type ChatRequestMeta struct {
 	UpstreamModel  string
 	ClientStream   bool
 	Body           []byte
+	ClientIP       string
+	UserAgent      string
+	RequestPreview string
 }
 
 func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
@@ -70,6 +73,7 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 		UpstreamModel:  upstream,
 		ClientStream:   clientStream,
 		Body:           encoded,
+		RequestPreview: captureChatRequest(encoded),
 	}, nil
 }
 
@@ -93,6 +97,7 @@ func (p *Proxy) HandleChat(c *gin.Context) {
 		gatewayError(c, ProtocolChat, http.StatusBadRequest, err.Error())
 		return
 	}
+	attachClientMeta(c, meta)
 	p.relay(c, meta, "/v2/chat/completions")
 }
 
@@ -107,6 +112,7 @@ func (p *Proxy) HandleResponses(c *gin.Context) {
 		gatewayError(c, ProtocolResponses, http.StatusBadRequest, err.Error())
 		return
 	}
+	attachClientMeta(c, meta)
 	p.relay(c, meta, "/v2/chat/completions")
 }
 
@@ -121,6 +127,7 @@ func (p *Proxy) HandleMessages(c *gin.Context) {
 		gatewayError(c, ProtocolAnthropic, http.StatusBadRequest, err.Error())
 		return
 	}
+	attachClientMeta(c, meta)
 	p.relay(c, meta, "/v2/chat/completions")
 }
 
@@ -164,13 +171,15 @@ func (p *Proxy) HandleCompletions(c *gin.Context) {
 		openaiError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	p.relay(c, &ChatRequestMeta{
+	meta := &ChatRequestMeta{
 		Protocol:       ProtocolChat,
 		RequestedModel: requested,
 		UpstreamModel:  upstream,
 		ClientStream:   clientStream,
 		Body:           encoded,
-	}, "/v2/completions")
+	}
+	attachClientMeta(c, meta)
+	p.relay(c, meta, "/v2/completions")
 }
 
 func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
@@ -281,35 +290,46 @@ func (p *Proxy) writeStream(c *gin.Context, resp *http.Response, meta *ChatReque
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 	flusher, _ := c.Writer.(http.Flusher)
+	sink := newSSESink(c.Writer, flusher)
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	streamStart := time.Now()
 	var usage *parsedUsage
 	var firstTokenMs int64
+	collector := NewCaptureCollector()
 	reqID := resp.Header.Get("X-Request-Id")
+
+	// 上游静默期间补心跳，避免中间代理按空闲超时掐断连接。
+	stopHeartbeat := startSSEHeartbeat(sink)
+	defer stopHeartbeat()
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if firstTokenMs == 0 && lineHasGeneratedToken(line) {
 			firstTokenMs = time.Since(streamStart).Milliseconds()
 		}
 		out, parsed := rewriteSSELine(line, meta.RequestedModel)
+		if parsed == nil {
+			parsed = &parsedUsage{}
+		}
+		parsed.Collector = collector
+		collector.Write(chunkText(line))
 		usage = mergeUsage(usage, parsed)
-		if _, err := io.WriteString(c.Writer, out+"\n"); err != nil {
+		if _, err := io.WriteString(sink, out+"\n"); err != nil {
 			if usage != nil {
 				usage.FirstTokenMs = firstTokenMs
 			}
 			return usage, err
 		}
-		if flusher != nil {
-			flusher.Flush()
-		}
 	}
 	if usage == nil {
 		usage = &parsedUsage{}
 	}
+	usage.Collector = collector
 	usage.FirstTokenMs = firstTokenMs
 	if reqID != "" {
 		usage.RequestID = reqID
@@ -325,9 +345,15 @@ func (p *Proxy) writeJSON(c *gin.Context, resp *http.Response, meta *ChatRequest
 	if err != nil {
 		return nil, err
 	}
-	if result.Usage != nil && result.Usage.RequestID == "" {
+	if result.Usage == nil {
+		result.Usage = &parsedUsage{}
+	}
+	if result.Usage.RequestID == "" {
 		result.Usage.RequestID = resp.Header.Get("X-Request-Id")
 	}
+	collector := NewCaptureCollector()
+	collector.Write(jsonResponseText(result))
+	result.Usage.Collector = collector
 	agg, err := encodeChatJSON(result)
 	if err != nil {
 		return result.Usage, err
@@ -409,6 +435,14 @@ func stripNonOpenAI(chunk map[string]any) {
 	}
 }
 
+func attachClientMeta(c *gin.Context, meta *ChatRequestMeta) {
+	if meta == nil {
+		return
+	}
+	meta.ClientIP = c.ClientIP()
+	meta.UserAgent = clipText(c.Request.UserAgent(), 240)
+}
+
 func (p *Proxy) recordUsage(acc *model.Account, meta *ChatRequestMeta, start time.Time, status int, errMsg string, usage *parsedUsage) {
 	if usage == nil {
 		usage = &parsedUsage{}
@@ -416,6 +450,8 @@ func (p *Proxy) recordUsage(acc *model.Account, meta *ChatRequestMeta, start tim
 	deriveMetrics(usage, time.Since(start).Milliseconds())
 	log := &model.UsageLog{
 		AccountID:                acc.ID,
+		AccountName:              accountLabel(acc),
+		Protocol:                 string(meta.Protocol),
 		Model:                    meta.RequestedModel,
 		UpstreamModel:            meta.UpstreamModel,
 		Stream:                   meta.ClientStream,
@@ -439,6 +475,13 @@ func (p *Proxy) recordUsage(acc *model.Account, meta *ChatRequestMeta, start tim
 		StatusCode:               status,
 		Error:                    errMsg,
 		RequestID:                usage.RequestID,
+		ClientIP:                 meta.ClientIP,
+		UserAgent:                meta.UserAgent,
+		RequestTokens:            len(meta.Body),
+		RequestPreview:           meta.RequestPreview,
+		ResponseTokens:           usage.ResponseBytes,
+		ResponsePreview:          usage.ResponsePreview,
+		RawUsage:                 clipRawUsage(usage.Raw),
 	}
 	if usage.Credit > 0 {
 		if deduct, err := model.ApplyCreditDeduction(acc.ID, usage.Credit); err == nil && deduct != nil {

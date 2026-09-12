@@ -5,19 +5,42 @@ APP_NAME="codebuddy-gateway"
 PID_FILE="./${APP_NAME}.pid"
 LOG_FILE="./run.log"
 
-stop() {
-  if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-      echo "停止旧进程 PID=$OLD_PID ..."
-      kill "$OLD_PID"
-      sleep 1
-      if kill -0 "$OLD_PID" 2>/dev/null; then
-        kill -9 "$OLD_PID"
-      fi
+running_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid; pid=$(tr -d '[:space:]' < "$PID_FILE")
+  [ -n "$pid" ] || return 1
+  if kill -0 "$pid" 2>/dev/null; then
+    if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$APP_NAME"; then
+      echo "$pid"
+      return 0
     fi
-    rm -f "$PID_FILE"
   fi
+  return 1
+}
+
+kill_pid() {
+  local pid="$1"
+  [ -n "$pid" ] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  echo "停止进程 PID=$pid ..."
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+stop() {
+  local pid leftover
+  if pid=$(running_pid); then
+    kill_pid "$pid"
+  fi
+  # pid 文件可能是 setsid 的短命父进程，再按二进制清一次，避免 8088 被残留占用。
+  for leftover in $(pgrep -f "./${APP_NAME} server" || true); do
+    kill_pid "$leftover"
+  done
+  rm -f "$PID_FILE"
 }
 
 build() {
@@ -34,27 +57,29 @@ start() {
   stop
   build
   echo "启动 $APP_NAME ..."
-  nohup ./"$APP_NAME" server > "$LOG_FILE" 2>&1 &
-  echo $! > "$PID_FILE"
-  sleep 1
-  if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-    echo "启动成功 PID=$(cat $PID_FILE)"
-    echo "日志: tail -f $LOG_FILE"
-  else
-    echo "启动失败，查看日志: cat $LOG_FILE"
-    exit 1
-  fi
+  export GATEWAY_PID_FILE="$(pwd)/${APP_NAME}.pid"
+  # setsid：脱离 Codex/SSH 的 PTY 进程组，避免会话结束把网关带走。
+  # 进程自己会写 GATEWAY_PID_FILE（真实 PID，不是 setsid 父进程）。
+  setsid nohup ./"$APP_NAME" server > "$LOG_FILE" 2>&1 < /dev/null &
+  for _ in $(seq 1 25); do
+    if pid=$(running_pid); then
+      echo "启动成功 PID=$pid"
+      echo "日志: tail -f $LOG_FILE"
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "启动失败，查看日志: cat $LOG_FILE"
+  exit 1
 }
 
 restart() { start; }
 
 status() {
-  if [ -f "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE")
-    if kill -0 "$PID" 2>/dev/null; then
-      echo "运行中 PID=$PID"
-      return 0
-    fi
+  local pid
+  if pid=$(running_pid); then
+    echo "运行中 PID=$pid"
+    return 0
   fi
   echo "未运行"
   return 1

@@ -22,6 +22,7 @@ func init() {
 	rootCmd.PersistentFlags().StringP("config", "c", "config.yaml", "config file path")
 	rootCmd.PersistentFlags().String("api-key", "", "downstream OpenAI API key, overrides config and env")
 	rootCmd.PersistentFlags().String("admin-key", "", "admin API key, overrides config and env")
+	rootCmd.PersistentFlags().Bool("dev", false, "dev mode: serve dashboard assets from ./web on every request (no rebuild/restart)")
 	rootCmd.AddCommand(command.NewServerCommand())
 	rootCmd.AddCommand(command.NewAuthCommand())
 	rootCmd.AddCommand(command.NewAccountCommand())

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"codebuddy-gateway/global"
@@ -725,13 +726,15 @@ func (p *Proxy) writeCompatStream(c *gin.Context, resp *http.Response, meta *Cha
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 	if meta.Protocol.IsAnthropic() {
 		c.Header("anthropic-version", "2023-06-01")
 	}
 	c.Status(http.StatusOK)
 	flusher, _ := c.Writer.(http.Flusher)
+	sink := newSSESink(c.Writer, flusher)
 
-	em := newStreamAdapter(meta.Protocol, c.Writer, flusher, meta.RequestedModel)
+	em := newStreamAdapter(meta.Protocol, sink, sink, meta.RequestedModel)
 	em.start()
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -740,6 +743,12 @@ func (p *Proxy) writeCompatStream(c *gin.Context, resp *http.Response, meta *Cha
 	var usage *parsedUsage
 	var firstTokenMs int64
 	reqID := resp.Header.Get("X-Request-Id")
+
+	// 上游思考期间可能长时间不吐字，中间任何一层代理都可能按空闲超时掐连接。
+	// 所以这里定期补一个 SSE 注释帧（心跳），保证链路上始终有字节流动。
+	stopHeartbeat := startSSEHeartbeat(sink)
+	defer stopHeartbeat()
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if firstTokenMs == 0 && lineHasGeneratedToken(line) {
@@ -768,4 +777,77 @@ func (p *Proxy) writeCompatStream(c *gin.Context, resp *http.Response, meta *Cha
 		return usage, err
 	}
 	return usage, finishErr
+}
+
+// sseHeartbeatInterval 是心跳间隔。取 15s 是为了留足余量：
+// 常见反代/网关的空闲超时通常在 60s 上下，15s 能稳定「喂饱」它们。
+const sseHeartbeatInterval = 15 * time.Second
+
+// sseSink 把下游 SSE 的 Write/Flush 串行化。
+// 心跳 goroutine 和主循环会同时写同一个 ResponseWriter，不锁就会把 event/data 帧撕开，
+// 客户端（Codex）表现为「写着写着突然断了 / Conversation interrupted」。
+type sseSink struct {
+	mu      sync.Mutex
+	w       io.Writer
+	flusher http.Flusher
+}
+
+func newSSESink(w io.Writer, flusher http.Flusher) *sseSink {
+	return &sseSink{w: w, flusher: flusher}
+}
+
+func (s *sseSink) Write(p []byte) (int, error) {
+	if s == nil || s.w == nil {
+		return 0, io.ErrClosedPipe
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := s.w.Write(p)
+	if err == nil && s.flusher != nil {
+		s.flusher.Flush()
+	}
+	return n, err
+}
+
+func (s *sseSink) Flush() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// startSSEHeartbeat 在上游静默期间持续发送 SSE 注释帧（": ping"）。
+// 注释帧不会被任何符合规范的 SSE 客户端当成数据，只用于保活。
+// 返回的 stop 函数会在结束后停止心跳并排空 goroutine。
+func startSSEHeartbeat(w io.Writer) func() {
+	return startSSEHeartbeatInterval(w, sseHeartbeatInterval)
+}
+
+func startSSEHeartbeatInterval(w io.Writer, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = sseHeartbeatInterval
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(done) })
+	}
 }

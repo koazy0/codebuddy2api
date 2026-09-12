@@ -64,43 +64,6 @@ func UpsertModel(c *gin.Context) {
 	response.Success(c, m)
 }
 
-func ListUsage(c *gin.Context) {
-	accountID, _ := parseID(c.Query("account_id"))
-	modelName := c.Query("model")
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 200 {
-		pageSize = 20
-	}
-	list, total, err := model.ListUsageLogs(accountID, modelName, pageSize, (page-1)*pageSize)
-	if err != nil {
-		response.Fail(c, err.Error())
-		return
-	}
-	response.SuccessWithPage(c, list, total, page, pageSize)
-}
-
-func UsageOverview(c *gin.Context) {
-	summary, err := model.UsageSummary()
-	if err != nil {
-		response.Fail(c, err.Error())
-		return
-	}
-	accounts, _ := model.ListAccounts()
-	enabled := 0
-	for _, acc := range accounts {
-		if acc.Status == model.AccountStatusEnabled {
-			enabled++
-		}
-	}
-	summary["accounts_total"] = len(accounts)
-	summary["accounts_enabled"] = enabled
-	response.Success(c, summary)
-}
-
 func Health(c *gin.Context) {
 	service.DefaultWatchdog.RunOnce(c.Request.Context())
 	accounts, err := model.ListAccounts()
@@ -140,5 +103,17 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/models", UpsertModel)
 	rg.GET("/usage", ListUsage)
 	rg.GET("/usage/summary", UsageOverview)
+	rg.GET("/usage/models", ListUsageModels)
+	rg.DELETE("/usage", DeleteUsageByFilter)
+	rg.DELETE("/usage/all", ClearUsage)
+	rg.GET("/usage/:id", GetUsage)
+	rg.DELETE("/usage/:id", DeleteUsage)
+	rg.GET("/stats/daily", UsageDaily)
+	rg.GET("/stats/models", UsageByModel)
+	rg.GET("/stats/accounts", UsageByAccount)
+	rg.GET("/settings/refresh", GetRefreshSettings)
+	rg.PUT("/settings/refresh", UpdateRefreshSettings)
+	rg.GET("/settings/access", GetAccessSettings)
+	rg.PUT("/settings/access", UpdateAccessSettings)
 	rg.POST("/watchdog", Health)
 }

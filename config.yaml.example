@@ -97,3 +97,10 @@ zap:
     show-line: true
     log-in-console: true
     retention-day: -1
+
+dashboard:
+    title: CodeBuddy2API 控制台
+    # 面板登录密码，留空表示只校验 admin-key。写入时自动转成 sha256: 摘要。
+    password: ""
+    # 是否同时校验 admin-key；关掉之前必须先设置面板密码。
+    require-admin-key: true

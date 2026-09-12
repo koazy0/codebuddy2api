@@ -3,6 +3,8 @@ package command
 import (
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"codebuddy-gateway/api"
@@ -26,9 +28,13 @@ func NewServerCommand() *cobra.Command {
 func ServerCommandFunc(cmd *cobra.Command, args []string) {
 	Bootstrap(cmd)
 	service.InitRuntime()
+	// Codex/SSH 的 PTY 关掉时会给当前进程组发 SIGHUP。忽略它，避免「动一动进程就没了」。
+	signal.Ignore(syscall.SIGHUP)
+	writePIDFile()
 	global.CORE_LOG.Info("gateway keys loaded",
 		zap.String("api_key", service.MaskToken(global.CORE_CONFIG.Gateway.APIKey)),
 		zap.String("listen", global.CORE_CONFIG.System.ListenAddr),
+		zap.Bool("dev", global.CORE_DEV),
 	)
 
 	app := api.NewAPIServer()
@@ -43,4 +49,14 @@ func ServerCommandFunc(cmd *cobra.Command, args []string) {
 	task.Stop()
 	app.ServerShutdown()
 	core.CloseDB()
+}
+
+func writePIDFile() {
+	path := strings.TrimSpace(os.Getenv("GATEWAY_PID_FILE"))
+	if path == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		global.CORE_LOG.Warn("write pid file failed", zap.String("path", path), zap.Error(err))
+	}
 }

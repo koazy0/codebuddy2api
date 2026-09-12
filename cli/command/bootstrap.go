@@ -12,6 +12,8 @@ func Bootstrap(cmd *cobra.Command) {
 	configFile, _ := cmd.Flags().GetString("config")
 	apiKey, _ := cmd.Flags().GetString("api-key")
 	adminKey, _ := cmd.Flags().GetString("admin-key")
+	dev, _ := cmd.Flags().GetBool("dev")
+	global.CORE_DEV = dev
 
 	global.CORE_VP = core.Viper(configFile)
 	core.ApplyKeyOverrides(apiKey, adminKey)

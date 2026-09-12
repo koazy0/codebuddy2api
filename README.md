@@ -23,6 +23,7 @@
 - **看门狗**：默认 300 秒一轮。健康检查、同步额度、连续失败 3 次进冷却，冷却到期自动重新启用。
 - **额度账本**：每月再生额度优先，再用一次性额度；看门狗定期从上游修正余额，每次对话同时记 token 和积分。
 - **用量统计**：输入/输出 token、缓存命中、首 token、延迟、TPS、额度来源，走 `/admin/usage` 和 `/admin/usage/summary`。
+- **本机控制台**：打开 `http://<host>:8088/` 就能看账号、余额、每次请求走了哪张票据、使用记录，以及上次/下次票据刷新时间。刷新 cron 也可以在网页上改，保存后热更新并写回 `config.yaml`。
 - **存储可选**：默认 SQLite，可切 MySQL / PostgreSQL。
 
 ## 快速开始
@@ -38,7 +39,7 @@ chmod +x run.sh
 ./run.sh start
 ```
 
-默认监听 `0.0.0.0:8088`。
+默认监听 `0.0.0.0:8088`。浏览器打开 `http://127.0.0.1:8088/`，用 admin key 进入控制台。
 
 ## 下游 API Key
 
@@ -218,6 +219,14 @@ curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/
 | PUT | `/admin/models` | 新增/更新模型 |
 | GET | `/admin/usage` | 用量明细 |
 | GET | `/admin/usage/summary` | 用量汇总 |
+| GET | `/admin/settings/refresh` | 查看票据刷新计划 |
+| PUT | `/admin/settings/refresh` | 修改刷新 cron / 阈值，热更新并写回配置 |
+| GET | `/admin/settings/access` | 面板登录设置 |
+| PUT | `/admin/settings/access` | 修改面板标题 / 密码 |
+| POST | `/admin/auth/verify` | 控制台登录校验（无需先带 admin key） |
+| GET | `/admin/stats/daily` | 每日 token 消耗 |
+| GET | `/admin/stats/models` | 模型消耗排行 |
+| GET | `/admin/stats/accounts` | 账号消耗排行 |
 | POST | `/admin/watchdog` | 立刻跑一轮看门狗 |
 
 ## Docker

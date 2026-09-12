@@ -89,3 +89,17 @@ func UpsertAccount(acc *model.Account) (*model.Account, bool, error) {
 	}
 	return acc, true, nil
 }
+
+// accountLabel 是 dashboard 里展示的账号短名，保持和前端列表一致。
+func accountLabel(acc *model.Account) string {
+	if acc == nil {
+		return ""
+	}
+	if acc.Name != "" {
+		return acc.Name
+	}
+	if acc.Username != "" {
+		return acc.Username
+	}
+	return ""
+}

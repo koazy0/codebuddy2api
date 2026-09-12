@@ -1,0 +1,16 @@
+[Unit]
+Description=CodeBuddy2API gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/codebuddy2api
+Environment=TZ=Asia/Shanghai
+Environment=GATEWAY_PID_FILE=/opt/codebuddy2api/codebuddy-gateway.pid
+ExecStart=/opt/codebuddy2api/bin/codebuddy-gateway server -c /opt/codebuddy2api/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

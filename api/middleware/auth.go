@@ -1,6 +1,9 @@
 package middleware
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -34,16 +37,51 @@ func AdminAuth() gin.HandlerFunc {
 		if key == "" {
 			key = strings.TrimSpace(c.GetHeader("X-Admin-Key"))
 		}
-		if !matchKey(key, global.CORE_CONFIG.Gateway.AdminKey) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code": 401,
-				"msg":  "invalid admin key",
-				"data": nil,
-			})
+		if matchKey(key, global.CORE_CONFIG.Gateway.AdminKey) {
+			c.Next()
 			return
 		}
-		c.Next()
+		if dashboardPasswordAllowed(c, key) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code": 401,
+			"msg":  "invalid admin key",
+			"data": nil,
+		})
 	}
+}
+
+func dashboardPasswordAllowed(c *gin.Context, bearer string) bool {
+	cfg := global.CORE_CONFIG.Dashboard
+	stored := strings.TrimSpace(cfg.Password)
+	if stored == "" || cfg.RequireAdminKey() {
+		return false
+	}
+	got := strings.TrimSpace(c.GetHeader("X-Dashboard-Password"))
+	if got == "" {
+		got = bearer
+	}
+	return matchDashboardSecret(got, stored)
+}
+
+func matchDashboardSecret(got, stored string) bool {
+	got = strings.TrimSpace(got)
+	stored = strings.TrimSpace(stored)
+	if got == "" || stored == "" {
+		return false
+	}
+	sumGot := sha256.Sum256([]byte(got))
+	if strings.HasPrefix(stored, "sha256:") {
+		want, err := hex.DecodeString(strings.TrimPrefix(stored, "sha256:"))
+		if err != nil || len(want) != len(sumGot) {
+			return false
+		}
+		return subtle.ConstantTimeCompare(sumGot[:], want) == 1
+	}
+	sumWant := sha256.Sum256([]byte(stored))
+	return subtle.ConstantTimeCompare(sumGot[:], sumWant[:]) == 1
 }
 
 func extractBearer(c *gin.Context) string {

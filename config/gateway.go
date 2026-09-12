@@ -11,6 +11,7 @@ type Gateway struct {
 	MaxRetries      int          `mapstructure:"max-retries" json:"max-retries" yaml:"max-retries"`
 	Rotate          string       `mapstructure:"rotate" json:"rotate" yaml:"rotate"`
 	TrustEnvProxy   bool         `mapstructure:"trust-env-proxy" json:"trust-env-proxy" yaml:"trust-env-proxy"`
+	Capture         string       `mapstructure:"capture" json:"capture" yaml:"capture"`
 	Proxy           string       `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 	ModelAlias      []ModelAlias `mapstructure:"model-alias" json:"model-alias" yaml:"model-alias"`
 }

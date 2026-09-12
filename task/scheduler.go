@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"codebuddy-gateway/global"
@@ -11,7 +12,15 @@ import (
 	"go.uber.org/zap"
 )
 
-var cronTimer timer.Timer
+const (
+	refreshCronName = "codebuddy"
+	refreshTaskName = "refresh-credentials"
+)
+
+var (
+	cronTimer timer.Timer
+	cronMu    sync.Mutex
+)
 
 func Start() {
 	cfg := global.CORE_CONFIG
@@ -20,14 +29,10 @@ func Start() {
 			time.Sleep(2 * time.Second)
 			service.DefaultRefresher.RefreshDueAccounts(context.Background())
 		}()
-		cronTimer = timer.NewTimerTask()
-		spec := cfg.Refresh.Spec()
-		if _, err := cronTimer.AddTaskByFunc("codebuddy", spec, func() {
-			service.DefaultRefresher.RefreshDueAccounts(context.Background())
-		}, "refresh-credentials"); err != nil {
-			global.CORE_LOG.Error("register refresh cron failed", zap.Error(err), zap.String("spec", spec))
+		if err := UpdateRefreshSchedule(); err != nil {
+			global.CORE_LOG.Error("register refresh cron failed", zap.Error(err), zap.String("spec", cfg.Refresh.Spec()))
 		} else {
-			global.CORE_LOG.Info("credential refresh cron started", zap.String("spec", spec))
+			global.CORE_LOG.Info("credential refresh cron started", zap.String("spec", cfg.Refresh.Spec()))
 		}
 	}
 
@@ -45,7 +50,36 @@ func Start() {
 }
 
 func Stop() {
+	cronMu.Lock()
+	defer cronMu.Unlock()
 	if cronTimer != nil {
 		cronTimer.Close()
+		cronTimer = nil
 	}
+}
+
+func UpdateRefreshSchedule() error {
+	cronMu.Lock()
+	defer cronMu.Unlock()
+
+	cfg := global.CORE_CONFIG.Refresh
+	if cronTimer != nil {
+		cronTimer.Clear(refreshCronName)
+	}
+	if !cfg.Enabled {
+		global.CORE_LOG.Info("credential refresh cron disabled")
+		return nil
+	}
+	if cronTimer == nil {
+		cronTimer = timer.NewTimerTask()
+	}
+	spec := cfg.Spec()
+	_, err := cronTimer.AddTaskByFunc(refreshCronName, spec, func() {
+		service.DefaultRefresher.RefreshDueAccounts(context.Background())
+	}, refreshTaskName)
+	if err != nil {
+		return err
+	}
+	global.CORE_LOG.Info("credential refresh cron updated", zap.String("spec", spec))
+	return nil
 }
