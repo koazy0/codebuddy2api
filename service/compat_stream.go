@@ -308,26 +308,24 @@ func (a *responsesAdapter) onToolCall(tc AggregatedToolCall) {
 	if tc.Name != "" {
 		st.name = tc.Name
 	}
-	if !st.opened {
-		if st.callID == "" {
-			st.callID = newID("call_")
-		}
-		st.itemID = newID("fc_")
-		a.emit("response.output_item.added", map[string]any{
-			"output_index": st.outputIndex,
-			"item": map[string]any{
-				"id":        st.itemID,
-				"type":      "function_call",
-				"status":    "in_progress",
-				"call_id":   st.callID,
-				"name":      st.name,
-				"arguments": "",
-			},
-		})
-		st.opened = true
-	}
 	if tc.Arguments != "" {
 		st.args += tc.Arguments
+	}
+	if isFreeformTool(st.name) || st.name == "" {
+		return
+	}
+	if !st.opened {
+		a.openFunctionCall(st)
+		if st.args != "" {
+			a.emit("response.function_call_arguments.delta", map[string]any{
+				"item_id":      st.itemID,
+				"output_index": st.outputIndex,
+				"delta":        st.args,
+			})
+		}
+		return
+	}
+	if tc.Arguments != "" {
 		a.emit("response.function_call_arguments.delta", map[string]any{
 			"item_id":      st.itemID,
 			"output_index": st.outputIndex,
@@ -336,11 +334,95 @@ func (a *responsesAdapter) onToolCall(tc AggregatedToolCall) {
 	}
 }
 
+func (a *responsesAdapter) openFunctionCall(st *toolStreamState) {
+	if st.opened {
+		return
+	}
+	if st.callID == "" {
+		st.callID = newID("call_")
+	}
+	st.itemID = newID("fc_")
+	a.emit("response.output_item.added", map[string]any{
+		"output_index": st.outputIndex,
+		"item": map[string]any{
+			"id":        st.itemID,
+			"type":      "function_call",
+			"status":    "in_progress",
+			"call_id":   st.callID,
+			"name":      st.name,
+			"arguments": "",
+		},
+	})
+	st.opened = true
+}
+
+func (a *responsesAdapter) emitCustomToolCall(st *toolStreamState) {
+	if st.callID == "" {
+		st.callID = newID("call_")
+	}
+	if st.itemID == "" {
+		st.itemID = newID("ctc_")
+	}
+	input := unwrapFreeformArgs(st.args)
+	st.args = input
+	a.emit("response.output_item.added", map[string]any{
+		"output_index": st.outputIndex,
+		"item": map[string]any{
+			"id":      st.itemID,
+			"type":    "custom_tool_call",
+			"status":  "in_progress",
+			"call_id": st.callID,
+			"name":    st.name,
+			"input":   "",
+		},
+	})
+	if input != "" {
+		a.emit("response.custom_tool_call_input.delta", map[string]any{
+			"item_id":      st.itemID,
+			"output_index": st.outputIndex,
+			"delta":        input,
+		})
+	}
+	a.emit("response.custom_tool_call_input.done", map[string]any{
+		"item_id":      st.itemID,
+		"output_index": st.outputIndex,
+		"input":        input,
+	})
+	a.emit("response.output_item.done", map[string]any{
+		"output_index": st.outputIndex,
+		"item": map[string]any{
+			"id":      st.itemID,
+			"type":    "custom_tool_call",
+			"status":  "completed",
+			"call_id": st.callID,
+			"name":    st.name,
+			"input":   input,
+		},
+	})
+}
+
 func (a *responsesAdapter) closeTools() {
 	for _, idx := range a.toolOrder {
 		st := a.tools[idx]
-		if st == nil || !st.opened {
+		if st == nil {
 			continue
+		}
+		if isFreeformTool(st.name) {
+			a.emitCustomToolCall(st)
+			continue
+		}
+		if !st.opened {
+			if st.callID == "" && st.name == "" && st.args == "" {
+				continue
+			}
+			a.openFunctionCall(st)
+			if st.args != "" {
+				a.emit("response.function_call_arguments.delta", map[string]any{
+					"item_id":      st.itemID,
+					"output_index": st.outputIndex,
+					"delta":        st.args,
+				})
+			}
 		}
 		a.emit("response.function_call_arguments.done", map[string]any{
 			"item_id":      st.itemID,
@@ -447,6 +529,17 @@ func (a *responsesAdapter) full(status string) map[string]any {
 	for _, idx := range a.toolOrder {
 		st := a.tools[idx]
 		if st == nil {
+			continue
+		}
+		if isFreeformTool(st.name) {
+			output = append(output, map[string]any{
+				"id":      st.itemID,
+				"type":    "custom_tool_call",
+				"status":  "completed",
+				"call_id": st.callID,
+				"name":    st.name,
+				"input":   unwrapFreeformArgs(st.args),
+			})
 			continue
 		}
 		output = append(output, map[string]any{
@@ -744,8 +837,8 @@ func (p *Proxy) writeCompatStream(c *gin.Context, resp *http.Response, meta *Cha
 	var firstTokenMs int64
 	reqID := resp.Header.Get("X-Request-Id")
 
-	// 上游思考期间可能长时间不吐字，中间任何一层代理都可能按空闲超时掐连接。
-	// 所以这里定期补一个 SSE 注释帧（心跳），保证链路上始终有字节流动。
+	// 上游思考期间可能长时间不吐字。心跳必须是 SSE 事件（不是 ": ping" 注释），
+	// 否则 Codex 的 eventsource idle timeout 仍会把会话掐掉。
 	stopHeartbeat := startSSEHeartbeat(sink)
 	defer stopHeartbeat()
 
@@ -771,12 +864,16 @@ func (p *Proxy) writeCompatStream(c *gin.Context, resp *http.Response, meta *Cha
 	if reqID != "" && usage.RequestID == "" {
 		usage.RequestID = reqID
 	}
-	em.setUsage(usage)
-	finishErr := em.finish()
 	if err := scanner.Err(); err != nil {
+		em.setUsage(usage)
+		_ = em.finish()
 		return usage, err
 	}
-	return usage, finishErr
+	if extra := p.nudgePreambleIfNeeded(c, meta, em); extra != nil {
+		usage = mergeUsage(usage, extra)
+	}
+	em.setUsage(usage)
+	return usage, em.finish()
 }
 
 // sseHeartbeatInterval 是心跳间隔。取 15s 是为了留足余量：
@@ -820,8 +917,15 @@ func (s *sseSink) Flush() {
 	}
 }
 
-// startSSEHeartbeat 在上游静默期间持续发送 SSE 注释帧（": ping"）。
-// 注释帧不会被任何符合规范的 SSE 客户端当成数据，只用于保活。
+// sseHeartbeatFrame 必须是完整 SSE 事件，不能用注释帧 ": ping"。
+// Codex Responses 客户端用 eventsource 解析后再做 idle timeout：
+// timeout(stream_idle_timeout, stream.next())。注释会被 parser 丢掉，
+// 应用层永远等不到事件，于是报 "idle timeout waiting for SSE"，TUI 显示 Conversation interrupted。
+// {"type":"ping"} 能被解析，随后作为 unhandled event 忽略，从而重置空闲计时；
+// 同时也能喂饱中间代理的 TCP/HTTP 空闲超时。
+const sseHeartbeatFrame = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+
+// startSSEHeartbeat 在上游静默期间持续发送 SSE ping 事件。
 // 返回的 stop 函数会在结束后停止心跳并排空 goroutine。
 func startSSEHeartbeat(w io.Writer) func() {
 	return startSSEHeartbeatInterval(w, sseHeartbeatInterval)
@@ -841,7 +945,7 @@ func startSSEHeartbeatInterval(w io.Writer, interval time.Duration) func() {
 			case <-done:
 				return
 			case <-ticker.C:
-				if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				if _, err := io.WriteString(w, sseHeartbeatFrame); err != nil {
 					return
 				}
 			}

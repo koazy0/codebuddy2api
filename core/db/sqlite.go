@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"codebuddy-gateway/global"
 
@@ -25,7 +26,7 @@ func (s *Sqlite) Connect() *gorm.DB {
 		os.MkdirAll(dir, os.ModePerm)
 	}
 
-	db, err := gorm.Open(sqlite.Open(cfg.Path), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(sqliteDSN(cfg.Path)), &gorm.Config{
 		Logger:                                   logger.Default.LogMode(getLogMode(cfg.LogMode)),
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
@@ -34,8 +35,21 @@ func (s *Sqlite) Connect() *gorm.DB {
 	}
 
 	sqlDB, _ := db.DB()
-	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	// SQLite 不是多连接数据库。DELETE 日志 + MaxOpenConns=100 会在
+	// 控制台 10 路并发读和看门狗/用量写入之间互相卡住，页面表现为登录后假死。
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	return db
+}
+
+func sqliteDSN(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "data/gateway.db"
+	}
+	if strings.Contains(path, "?") || strings.HasPrefix(path, "file:") {
+		return path
+	}
+	return "file:" + path + "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&cache=shared"
 }

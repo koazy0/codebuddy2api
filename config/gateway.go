@@ -14,6 +14,7 @@ type Gateway struct {
 	Capture         string       `mapstructure:"capture" json:"capture" yaml:"capture"`
 	Proxy           string       `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 	ModelAlias      []ModelAlias `mapstructure:"model-alias" json:"model-alias" yaml:"model-alias"`
+	FallbackModel   string       `mapstructure:"fallback-model" json:"fallback-model" yaml:"fallback-model"`
 }
 
 type ModelAlias struct {

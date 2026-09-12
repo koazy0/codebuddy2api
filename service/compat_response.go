@@ -112,6 +112,17 @@ func encodeResponsesJSON(result *ChatResult) ([]byte, error) {
 		if callID == "" {
 			callID = newID("call_")
 		}
+		if isFreeformTool(tc.Name) {
+			output = append(output, map[string]any{
+				"id":      newID("ctc_"),
+				"type":    "custom_tool_call",
+				"status":  "completed",
+				"call_id": callID,
+				"name":    tc.Name,
+				"input":   unwrapFreeformArgs(tc.Arguments),
+			})
+			continue
+		}
 		output = append(output, map[string]any{
 			"id":        newID("fc_"),
 			"type":      "function_call",

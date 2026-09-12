@@ -64,3 +64,17 @@ func isUnapprovedChannel(raw []byte) bool {
 	}
 	return strings.Contains(strings.ToLower(s), "unapproved channel")
 }
+
+func isUpstreamModelUnavailable(raw []byte) bool {
+	s := string(raw)
+	if strings.Contains(s, "11102") {
+		return true
+	}
+	low := strings.ToLower(s)
+	return strings.Contains(low, "only available for authorized users") ||
+		strings.Contains(low, "the requested model is not available")
+}
+
+func isUpstreamRequestError(raw []byte) bool {
+	return isUnapprovedChannel(raw) || isUpstreamModelUnavailable(raw)
+}

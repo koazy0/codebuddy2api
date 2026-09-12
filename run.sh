@@ -4,8 +4,23 @@ cd "$(dirname "$0")"
 APP_NAME="codebuddy-gateway"
 PID_FILE="./${APP_NAME}.pid"
 LOG_FILE="./run.log"
+UNIT_NAME="codebuddy-gateway"
+ROOT="$(pwd)"
+
+have_systemd() {
+  [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
+}
+
+unit_loaded() {
+  have_systemd || return 1
+  systemctl cat "$UNIT_NAME" >/dev/null 2>&1
+}
 
 running_pid() {
+  if unit_loaded && systemctl is-active --quiet "$UNIT_NAME"; then
+    systemctl show -p MainPID --value "$UNIT_NAME" 2>/dev/null | awk '$1+0>0{print; exit}'
+    return 0
+  fi
   [ -f "$PID_FILE" ] || return 1
   local pid; pid=$(tr -d '[:space:]' < "$PID_FILE")
   [ -n "$pid" ] || return 1
@@ -32,12 +47,15 @@ kill_pid() {
 }
 
 stop() {
+  if unit_loaded; then
+    echo "停止 systemd 服务 $UNIT_NAME ..."
+    systemctl stop "$UNIT_NAME" >/dev/null 2>&1 || true
+  fi
   local pid leftover
   if pid=$(running_pid); then
     kill_pid "$pid"
   fi
-  # pid 文件可能是 setsid 的短命父进程，再按二进制清一次，避免 8088 被残留占用。
-  for leftover in $(pgrep -f "./${APP_NAME} server" || true); do
+  for leftover in $(pgrep -f "${APP_NAME} server" || true); do
     kill_pid "$leftover"
   done
   rm -f "$PID_FILE"
@@ -53,13 +71,36 @@ build() {
   echo "编译成功"
 }
 
+install_unit() {
+  have_systemd || return 1
+  local src="$ROOT/scripts/codebuddy-gateway.local.service"
+  [ -f "$src" ] || return 1
+  install -m 644 "$src" "/etc/systemd/system/${UNIT_NAME}.service"
+  systemctl daemon-reload
+}
+
 start() {
-  stop
   build
   echo "启动 $APP_NAME ..."
-  export GATEWAY_PID_FILE="$(pwd)/${APP_NAME}.pid"
-  # setsid：脱离 Codex/SSH 的 PTY 进程组，避免会话结束把网关带走。
-  # 进程自己会写 GATEWAY_PID_FILE（真实 PID，不是 setsid 父进程）。
+  export GATEWAY_PID_FILE="$ROOT/${APP_NAME}.pid"
+  if have_systemd; then
+    install_unit || true
+    if unit_loaded; then
+      systemctl enable "$UNIT_NAME" >/dev/null 2>&1 || true
+      systemctl restart "$UNIT_NAME"
+      sleep 0.4
+      if systemctl is-active --quiet "$UNIT_NAME"; then
+        echo "启动成功 systemd $UNIT_NAME PID=$(systemctl show -p MainPID --value "$UNIT_NAME")"
+        echo "日志: journalctl -u $UNIT_NAME -f   或 tail -f $LOG_FILE"
+        return 0
+      fi
+      echo "systemd 启动失败，journalctl -u $UNIT_NAME -n 40 --no-pager"
+      systemctl --no-pager --full status "$UNIT_NAME" || true
+      exit 1
+    fi
+  fi
+  stop
+  # 兜底：没有 systemd 时再 setsid。注意：从 Codex 回合里启动仍可能被回合回收。
   setsid nohup ./"$APP_NAME" server > "$LOG_FILE" 2>&1 < /dev/null &
   for _ in $(seq 1 25); do
     if pid=$(running_pid); then
@@ -76,6 +117,10 @@ start() {
 restart() { start; }
 
 status() {
+  if unit_loaded; then
+    systemctl --no-pager --full status "$UNIT_NAME" | head -20
+    return 0
+  fi
   local pid
   if pid=$(running_pid); then
     echo "运行中 PID=$pid"

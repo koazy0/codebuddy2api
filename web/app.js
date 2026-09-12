@@ -51,16 +51,30 @@ function remainText(acc) {
     + " (月 " + monthly.toFixed(2) + " / 次 " + onetime.toFixed(2) + ")";
 }
 
+// 请求超时上限。没有它的话，任何一个挂住的请求都会让整个面板永远转圈。
+const API_TIMEOUT_MS = 15000;
+
 async function api(path, opts) {
   opts = opts || {};
-  const res = await fetch(path, Object.assign({}, opts, {
-    headers: Object.assign({
-      "Authorization": "Bearer " + (state.adminKey || state.password || ""),
-      "X-Admin-Key": state.adminKey || "",
-      "X-Dashboard-Password": state.password || "",
-      "Content-Type": "application/json"
-    }, opts.headers || {})
-  }));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs || API_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(path, Object.assign({}, opts, {
+      signal: controller.signal,
+      headers: Object.assign({
+        "Authorization": "Bearer " + (state.adminKey || state.password || ""),
+        "X-Admin-Key": state.adminKey || "",
+        "X-Dashboard-Password": state.password || "",
+        "Content-Type": "application/json"
+      }, opts.headers || {})
+    }));
+  } catch (err) {
+    if (err && err.name === "AbortError") throw new Error("请求超时（" + Math.round((opts.timeoutMs || API_TIMEOUT_MS) / 1000) + "s），请稍后重试");
+    throw new Error("网络错误：" + (err && err.message ? err.message : String(err)));
+  } finally {
+    clearTimeout(timer);
+  }
   const body = await res.json().catch(() => ({}));
   if (res.status === 401 || body.code === 401) {
     const err = new Error(body.msg || "未授权");
@@ -307,18 +321,36 @@ function usageQuery() {
 }
 
 async function loadAll() {
-  const [summary, settings, accounts, usage, models, daily, byModel, byAccount, usageModels, access] = await Promise.all([
-    api("/admin/usage/summary"),
-    api("/admin/settings/refresh"),
-    api("/admin/accounts"),
-    api("/admin/usage?" + usageQuery().toString()),
-    api("/admin/models"),
-    api("/admin/stats/daily?days=14"),
-    api("/admin/stats/models?limit=8"),
-    api("/admin/stats/accounts?limit=10"),
-    api("/admin/usage/models"),
-    api("/admin/settings/access")
-  ]);
+  // 逐个接口容错：某个接口失败只影响它自己的模块，
+  // 不再像 Promise.all 那样一个失败就整页白屏。
+  const reqs = {
+    summary: api("/admin/usage/summary"),
+    settings: api("/admin/settings/refresh"),
+    accounts: api("/admin/accounts"),
+    usage: api("/admin/usage?" + usageQuery().toString()),
+    models: api("/admin/models"),
+    daily: api("/admin/stats/daily?days=14"),
+    byModel: api("/admin/stats/models?limit=8"),
+    byAccount: api("/admin/stats/accounts?limit=10"),
+    usageModels: api("/admin/usage/models"),
+    access: api("/admin/settings/access")
+  };
+  const keys = Object.keys(reqs);
+  const settled = await Promise.allSettled(keys.map(k => reqs[k]));
+  const out = {};
+  const failed = [];
+  keys.forEach((k, i) => {
+    const r = settled[i];
+    if (r.status === "fulfilled") { out[k] = r.value; return; }
+    out[k] = null;
+    failed.push(k + ": " + (r.reason && r.reason.message ? r.reason.message : String(r.reason)));
+  });
+  // 授权失效是全局问题，直接抛出去让调用方走重新登录。
+  const denied = settled.find(r => r.status === "rejected" && r.reason && r.reason.unauthorized);
+  if (denied) throw denied.reason;
+
+  const { summary, settings, accounts, usage, models, daily, byModel, byAccount, usageModels, access } = out;
+  if (failed.length) flash("部分数据加载失败（" + failed.length + "/" + keys.length + "）：" + failed[0], false);
   state.summary = summary || {};
   renderRefresh(settings || {});
   renderAccounts(accounts || []);
@@ -352,33 +384,55 @@ async function signOut(message) {
   localStorage.removeItem("cb2api_password");
   state.adminKey = "";
   state.password = "";
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
   $("gate").classList.remove("hidden");
   if (message) $("gateErr").textContent = message;
 }
 
-$("gateBtn").onclick = async () => {
+// verifyCredentials 只做「凭证对不对」的校验，不拉数据，
+// 这样打开页面时可以先静默确认登录态，失败就直接停在登录框等用户输入。
+async function verifyCredentials(password, adminKey) {
+  const res = await fetch("/admin/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: password, admin_key: adminKey })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || (body.code && body.code !== 0)) throw new Error(body.msg || "登录失败");
+  return body.data;
+}
+
+// doLogin 负责「校验 -> 存凭证 -> 拉数据 -> 关门」的完整流程。
+// 按钮会在这期间禁用，避免连点触发多次并发加载。
+async function doLogin(password, adminKey) {
+  const btn = $("gateBtn");
+  if (btn.disabled) return;
   $("gateErr").textContent = "";
-  const password = $("gatePassword").value;
-  const adminKey = $("gateKey").value.trim();
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "登录中…";
   try {
-    const res = await fetch("/admin/auth/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: password, admin_key: adminKey })
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || (body.code && body.code !== 0)) throw new Error(body.msg || "登录失败");
+    await verifyCredentials(password, adminKey);
     state.password = password;
     state.adminKey = adminKey;
     localStorage.setItem("cb2api_password", password);
     localStorage.setItem("cb2api_admin_key", adminKey);
-    await loadAll();
     $("gate").classList.add("hidden");
+    await loadAll();
     flash("已加载 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }), true);
   } catch (err) {
+    $("gate").classList.remove("hidden");
     $("gateErr").textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
-};
+}
+
+$("gateBtn").onclick = () => doLogin($("gatePassword").value, $("gateKey").value.trim());
 $("gateKey").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gateBtn").click(); });
 $("gatePassword").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gateBtn").click(); });
 $("logoutBtn").onclick = () => signOut("已退出，请重新登录。");
@@ -620,11 +674,31 @@ async function boot() {
   const savedKey = localStorage.getItem("cb2api_admin_key") || "";
   $("gatePassword").value = savedPassword;
   $("gateKey").value = savedKey;
-  if (savedPassword || savedKey) $("gateBtn").click();
+  if (!savedPassword && !savedKey) return;
+  // 打开页面时先静默校验凭证：有效就直接进面板，
+  // 失效就停在登录框，不会「自动登录卡住」让人输不进密码。
+  state.password = savedPassword;
+  state.adminKey = savedKey;
+  try {
+    await verifyCredentials(savedPassword, savedKey);
+    $("gate").classList.add("hidden");
+    await loadAll();
+    flash("已加载 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }), true);
+  } catch (err) {
+    signOut(err && err.unauthorized ? "登录已失效，请重新输入。" : "");
+  }
 }
 boot();
-state.timer = setInterval(() => {
-  if (!state.auto || $("gate").classList.contains("hidden") === false) return;
-  if (state.tab === "settings") return;
-  loadAll().catch((err) => { if (err.unauthorized) signOut("登录已失效，请重新登录。"); });
-}, 15000);
+
+// 定时器只创建一次，退出登录时由 signOut 清掉；
+// 没登录（登录框还盖着）时不打接口，避免无谓请求。
+if (!state.timer) {
+  state.timer = setInterval(() => {
+    if ($("gate").classList.contains("hidden") === false) return;
+    if (!state.auto) return;
+    if (state.tab === "settings") return;
+    loadAll().catch((err) => {
+      if (err && err.unauthorized) signOut("登录已失效，请重新登录。");
+    });
+  }, 15000);
+}

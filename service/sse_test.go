@@ -8,6 +8,21 @@ import (
 	"time"
 )
 
+func TestSSEHeartbeatFrameIsEventNotComment(t *testing.T) {
+	if strings.HasPrefix(strings.TrimSpace(sseHeartbeatFrame), ":") {
+		t.Fatal("heartbeat must not be an SSE comment; Codex idle-timeout ignores comments")
+	}
+	if !strings.Contains(sseHeartbeatFrame, "event: ping") {
+		t.Fatalf("missing event name: %q", sseHeartbeatFrame)
+	}
+	if !strings.Contains(sseHeartbeatFrame, `"type":"ping"`) {
+		t.Fatalf("missing json type: %q", sseHeartbeatFrame)
+	}
+	if !strings.HasSuffix(sseHeartbeatFrame, "\n\n") {
+		t.Fatalf("frame must end with blank line: %q", sseHeartbeatFrame)
+	}
+}
+
 func TestSSESinkSerializesHeartbeatAndEvents(t *testing.T) {
 	var buf safeBuffer
 	sink := newSSESink(&buf, nil)
@@ -35,8 +50,9 @@ func TestSSESinkSerializesHeartbeatAndEvents(t *testing.T) {
 	if raw == "" {
 		t.Fatal("no bytes written")
 	}
-	if strings.Count(raw, ": ping") != strings.Count(raw, ": ping\n\n") {
-		t.Fatalf("torn ping comment:\n%s", raw)
+	ping := strings.TrimRight(sseHeartbeatFrame, "\n")
+	if strings.Count(raw, "event: ping") != strings.Count(raw, ping) {
+		t.Fatalf("torn ping event:\n%s", raw)
 	}
 
 	for _, frame := range strings.Split(raw, "\n\n") {
@@ -44,7 +60,7 @@ func TestSSESinkSerializesHeartbeatAndEvents(t *testing.T) {
 		if frame == "" {
 			continue
 		}
-		if frame == ": ping" || strings.HasPrefix(frame, "event: test\ndata: {\"i\":") {
+		if frame == ping || strings.HasPrefix(frame, "event: test\ndata: {\"i\":") {
 			continue
 		}
 		t.Fatalf("interleaved/torn SSE frame %q\nfull:\n%s", frame, raw)

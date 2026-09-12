@@ -21,6 +21,9 @@ gateway:
           to: glm-5.2
         - from: gpt-3.5-turbo
           to: glm-5.0-turbo
+    # Codex Desktop 会额外请求 gpt-5.6-luna 等 OpenAI 托管模型。
+    # 留空则自动落到最近一次成功的上游模型，再不行用 deepseek-v4.1-flash。
+    fallback-model: ""
 
 codebuddy:
     ide-type: CodeBuddyIDE

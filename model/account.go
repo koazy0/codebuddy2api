@@ -112,7 +112,7 @@ func ListAccounts() ([]Account, error) {
 func ListEnabledAccounts() ([]Account, error) {
 	var list []Account
 	now := time.Now()
-	err := MustDB().Where("status = ?", AccountStatusEnabled).
+	err := MustDB().Where("status IN ?", []string{AccountStatusEnabled, AccountStatusCooldown}).
 		Where("cooldown_until IS NULL OR cooldown_until < ?", now).
 		Order("id asc").
 		Find(&list).Error

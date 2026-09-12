@@ -124,7 +124,10 @@ func ListUsageLogs(filter UsageFilter) ([]UsageLog, int64, error) {
 		filter.Limit = 20
 	}
 	var list []UsageLog
-	err := db.Order("id desc").Limit(filter.Limit).Offset(filter.Offset).Find(&list).Error
+	// 列表不带正文。Codex 系统提示一条就能 16KB，20 条打进控制台会把登录后的
+	// Promise.all 卡在 JSON 解析上，表现为「点了进得去、密码也输不了」。
+	err := db.Omit("request_preview", "response_preview", "raw_usage").
+		Order("id desc").Limit(filter.Limit).Offset(filter.Offset).Find(&list).Error
 	return list, total, err
 }
 

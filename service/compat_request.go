@@ -81,6 +81,7 @@ func responsesToChat(raw []byte) (map[string]any, error) {
 			chat["reasoning_summary"] = summary
 		}
 	}
+	injectUnattendedRuntime(chat)
 	return chat, nil
 }
 
@@ -145,9 +146,9 @@ func convertResponsesInput(v any) []any {
 		typ := asString(m["type"])
 		role := asString(m["role"])
 		switch typ {
-		case "function_call":
+		case "function_call", "custom_tool_call":
 			pending = append(pending, responsesFunctionCallToToolCall(m))
-		case "function_call_output", "tool_result":
+		case "function_call_output", "tool_result", "custom_tool_call_output":
 			flush()
 			callID := asString(m["call_id"])
 			if callID == "" {
@@ -184,7 +185,16 @@ func responsesFunctionCallToToolCall(m map[string]any) map[string]any {
 	name := asString(m["name"])
 	args := asString(m["arguments"])
 	if args == "" {
-		args = mustJSON(m["input"])
+		if input := m["input"]; input != nil {
+			if str, ok := input.(string); ok {
+				args = str
+			} else {
+				args = mustJSON(input)
+			}
+		}
+	}
+	if isFreeformTool(name) {
+		args = ensureFreeformJSONArgs(args)
 	}
 	return map[string]any{
 		"id":   id,
@@ -194,6 +204,47 @@ func responsesFunctionCallToToolCall(m map[string]any) map[string]any {
 			"arguments": args,
 		},
 	}
+}
+
+func isFreeformTool(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "apply_patch" || n == "applypatch" || strings.HasSuffix(n, "__apply_patch")
+}
+
+func unwrapFreeformArgs(args string) string {
+	s := strings.TrimSpace(args)
+	if s == "" {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &obj); err != nil {
+		return args
+	}
+	raw, ok := obj["input"]
+	if !ok {
+		return args
+	}
+	var inner string
+	if err := json.Unmarshal(raw, &inner); err != nil {
+		return args
+	}
+	return inner
+}
+
+func ensureFreeformJSONArgs(args string) string {
+	s := strings.TrimSpace(args)
+	if s == "" {
+		b, _ := json.Marshal(map[string]string{"input": ""})
+		return string(b)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(s), &obj); err == nil {
+		if _, ok := obj["input"]; ok {
+			return s
+		}
+	}
+	b, _ := json.Marshal(map[string]string{"input": args})
+	return string(b)
 }
 
 func convertResponsesContent(v any) any {
@@ -327,6 +378,23 @@ func customToolToFunction(m map[string]any, prefix string) map[string]any {
 	desc := asString(m["description"])
 	if desc == "" {
 		desc = "Custom tool " + name
+	}
+	if format, ok := m["format"].(map[string]any); ok {
+		if def := asString(format["definition"]); def != "" {
+			syntax := asString(format["syntax"])
+			if syntax == "" {
+				syntax = asString(format["type"])
+			}
+			extra := "\n\nUse this exact freeform input format"
+			if syntax != "" {
+				extra += " (" + syntax + ")"
+			}
+			extra += ":\n" + def
+			desc += extra
+		}
+	}
+	if isFreeformTool(name) && !strings.Contains(desc, "*** Begin Patch") {
+		desc += "\n\n" + applyPatchJSONHint
 	}
 	paramName := "input"
 	if name == "exec" || strings.HasSuffix(name, "__exec") {

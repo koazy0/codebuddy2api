@@ -77,15 +77,6 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 	}, nil
 }
 
-func ResolveModelAlias(name string) string {
-	for _, alias := range global.CORE_CONFIG.Gateway.ModelAlias {
-		if alias.From == name && alias.To != "" {
-			return alias.To
-		}
-	}
-	return name
-}
-
 func (p *Proxy) HandleChat(c *gin.Context) {
 	raw, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -237,25 +228,42 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Sprintf("upstream %d: %s", resp.StatusCode, clip(raw, 200))
-			if !isUnapprovedChannel(raw) {
-				p.rotator.MarkFailure(acc, lastErr)
+			if isUpstreamModelUnavailable(raw) && maybeRewriteUnavailableModel(meta) {
+				global.CORE_LOG.Warn("upstream model unavailable, retrying same account with fallback",
+					zap.Uint("account_id", acc.ID),
+					zap.String("error", lastErr),
+					zap.String("fallback", meta.UpstreamModel))
+				resp, err = p.doUpstream(c.Request.Context(), acc, path, meta.Body)
+				if err != nil {
+					lastErr = err.Error()
+					continue
+				}
+				if resp.StatusCode == http.StatusOK {
+					p.commitSuccess(c, acc, resp, meta, start)
+					return
+				}
+				raw, _ = io.ReadAll(resp.Body)
+				resp.Body.Close()
+				lastErr = fmt.Sprintf("upstream %d: %s", resp.StatusCode, clip(raw, 200))
+			}
+			if isUpstreamRequestError(raw) {
+				global.CORE_LOG.Warn("upstream rejected request without burning account", zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
 			} else {
-				global.CORE_LOG.Warn("upstream rejected unapproved channel", zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
+				p.rotator.MarkFailure(acc, lastErr)
 			}
 			if resp.StatusCode >= 500 {
 				continue
 			}
-			gatewayError(c, meta.Protocol, http.StatusBadGateway, lastErr)
+			status := http.StatusBadGateway
+			if isUpstreamRequestError(raw) {
+				status = http.StatusBadRequest
+			}
+			gatewayError(c, meta.Protocol, status, lastErr)
 			p.recordUsage(acc, meta, start, resp.StatusCode, lastErr, nil)
 			return
 		}
 
-		p.rotator.MarkSuccess(acc)
-		usage, writeErr := p.writeResponse(c, resp, meta)
-		if writeErr != nil {
-			global.CORE_LOG.Warn("write upstream response failed", zap.Error(writeErr))
-		}
-		p.recordUsage(acc, meta, start, http.StatusOK, "", usage)
+		p.commitSuccess(c, acc, resp, meta, start)
 		return
 	}
 
@@ -263,6 +271,15 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 		lastErr = "no available codebuddy account"
 	}
 	gatewayError(c, meta.Protocol, http.StatusServiceUnavailable, lastErr)
+}
+
+func (p *Proxy) commitSuccess(c *gin.Context, acc *model.Account, resp *http.Response, meta *ChatRequestMeta, start time.Time) {
+	p.rotator.MarkSuccess(acc)
+	usage, writeErr := p.writeResponse(c, resp, meta)
+	if writeErr != nil {
+		global.CORE_LOG.Warn("write upstream response failed", zap.Error(writeErr))
+	}
+	p.recordUsage(acc, meta, start, http.StatusOK, "", usage)
 }
 
 func (p *Proxy) doUpstream(ctx context.Context, acc *model.Account, path string, body []byte) (*http.Response, error) {
@@ -303,7 +320,7 @@ func (p *Proxy) writeStream(c *gin.Context, resp *http.Response, meta *ChatReque
 	collector := NewCaptureCollector()
 	reqID := resp.Header.Get("X-Request-Id")
 
-	// 上游静默期间补心跳，避免中间代理按空闲超时掐断连接。
+	// 上游静默期间补 SSE ping 事件，同时喂饱代理空闲超时和 Codex idle timeout。
 	stopHeartbeat := startSSEHeartbeat(sink)
 	defer stopHeartbeat()
 
@@ -446,6 +463,9 @@ func attachClientMeta(c *gin.Context, meta *ChatRequestMeta) {
 func (p *Proxy) recordUsage(acc *model.Account, meta *ChatRequestMeta, start time.Time, status int, errMsg string, usage *parsedUsage) {
 	if usage == nil {
 		usage = &parsedUsage{}
+	}
+	if status == http.StatusOK {
+		rememberGoodModel(meta.UpstreamModel)
 	}
 	deriveMetrics(usage, time.Since(start).Milliseconds())
 	log := &model.UsageLog{

@@ -1,0 +1,20 @@
+[Unit]
+Description=CodeBuddy2API gateway (local)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/codebuddy2api
+Environment=TZ=Asia/Shanghai
+Environment=GATEWAY_PID_FILE=/root/codebuddy2api/codebuddy-gateway.pid
+ExecStart=/root/codebuddy2api/codebuddy-gateway server
+Restart=always
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=10
+LimitNOFILE=65536
+StandardOutput=append:/root/codebuddy2api/run.log
+StandardError=append:/root/codebuddy2api/run.log
+
+[Install]
+WantedBy=multi-user.target
