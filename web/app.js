@@ -10,8 +10,19 @@ const state = {
   auto: true,
   timer: null,
   adminKey: "",
-  password: ""
+  password: "",
+  latestAccountId: null
 };
+
+// 兜底错误提示：任何未捕获的异常都显示给用户，而不是静默变成「点了没反应」。
+window.addEventListener("error", (e) => {
+  if ($("flash")) flash("页面出错：" + (e.message || "未知错误"), false);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e && e.reason;
+  if (reason && reason.unauthorized) return;
+  if ($("flash")) flash("请求出错：" + (reason && reason.message ? reason.message : String(reason)), false);
+});
 
 function esc(v) {
   return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -89,8 +100,14 @@ function modal(title, html) {
   $("modalTitle").textContent = title;
   $("modalBody").innerHTML = html;
   $("modal").classList.remove("hidden");
+  document.body.classList.add("modal-open");
 }
-function closeModal() { $("modal").classList.add("hidden"); $("modalBody").innerHTML = ""; }
+function closeModal() {
+  $("modal").classList.add("hidden");
+  $("modalBody").innerHTML = "";
+  document.body.classList.remove("modal-open");
+  delete $("modal").dataset.backdrop;
+}
 
 function renderCards(summary, settings, accounts) {
   const latestUsed = accounts.slice().sort((a, b) => new Date(b.last_used_at || 0) - new Date(a.last_used_at || 0))[0];
@@ -281,6 +298,10 @@ function renderModels(models) {
 function renderAccess(access) {
   $("dashTitle").value = access.title || "";
   $("dashRequireAdmin").checked = !!access.require_admin_key;
+  const title = access.title || "CodeBuddy2API 控制台";
+  $("pageTitle").textContent = title;
+  $("gateTitle").textContent = title;
+  document.title = title;
   $("accessHint").innerHTML = access.password_set
     ? `已设置面板密码<span class="strength ${esc(access.password_strength || "weak")}">${esc(access.password_strength || "")}</span>`
     : "尚未设置面板密码，当前仅靠 Admin Key";
@@ -366,12 +387,13 @@ async function loadAll() {
   renderRuntime(summary || {}, settings || {});
 }
 
-async function withFlash(fn, okMsg) {
+async function withFlash(fn, okMsg, opts) {
   try {
     flash("处理中...");
     const result = await fn();
     if (okMsg) flash(okMsg, true);
-    await loadAll();
+    // 有些调用本身就是重新加载（例如「刷新数据」），不必再多刷一遍。
+    if (!(opts && opts.skipReload)) await loadAll();
     return result;
   } catch (err) {
     flash(err.message || String(err), false);
@@ -436,13 +458,28 @@ $("gateBtn").onclick = () => doLogin($("gatePassword").value, $("gateKey").value
 $("gateKey").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gateBtn").click(); });
 $("gatePassword").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gateBtn").click(); });
 $("logoutBtn").onclick = () => signOut("已退出，请重新登录。");
-$("reloadBtn").onclick = () => withFlash(loadAll, "已刷新");
+$("reloadBtn").onclick = () => withFlash(loadAll, "已刷新", { skipReload: true });
 $("autoBtn").onclick = () => {
   state.auto = !state.auto;
   $("autoBtn").textContent = "自动刷新：" + (state.auto ? "开" : "关");
 };
 $("modalClose").onclick = closeModal;
-$("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };
+// 弹窗顶部可能被滚动内容顶走，这里再兜一层：优先用事件委托处理关闭，
+// 并支持键盘 ESC 与点击遮罩空白处关闭。
+$("modal").addEventListener("click", (e) => {
+  const closer = e.target.closest && e.target.closest("[data-close-modal]");
+  if (closer) closeModal();
+});
+// 只有点到遮罩本身才关闭，避免在弹窗内容里拖动/选中文字时误关。
+$("modal").addEventListener("mousedown", (e) => { if (e.target === $("modal")) $("modal").dataset.backdrop = "1"; });
+$("modal").addEventListener("mouseup", (e) => {
+  if (e.target === $("modal") && $("modal").dataset.backdrop === "1") closeModal();
+  delete $("modal").dataset.backdrop;
+});
+// ESC 关闭弹窗；弹窗没开时不影响其它按键。
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal();
+});
 
 $("tabs").onclick = (e) => {
   const btn = e.target.closest("button[data-tab]");
@@ -451,6 +488,12 @@ $("tabs").onclick = (e) => {
   [...$("tabs").querySelectorAll("button")].forEach(b => b.classList.toggle("active", b === btn));
   ["overview", "requests", "accounts", "models", "settings"].forEach(t =>
     $("tab-" + t).classList.toggle("hidden", t !== state.tab));
+  // 切到「面板设置」时同步刷新登录设置，避免显示其它标签页留下的旧值。
+  if (state.tab === "settings") {
+    api("/admin/settings/access")
+      .then((access) => renderAccess(access || {}))
+      .catch((err) => { if (err && err.unauthorized) signOut("登录已失效，请重新登录。"); });
+  }
 };
 
 $("cronPreset").onchange = () => {
@@ -564,13 +607,18 @@ function accountForm(acc) {
     if ($("frmRt").value.trim()) body.refresh_token = $("frmRt").value.trim();
     if ($("frmCookie").value.trim()) body.session_cookie = $("frmCookie").value.trim();
     if (!acc && !body.jwt) { flash("新增账号必须填 JWT", false); return; }
+    const saveBtn = $("frmSave");
+    if (saveBtn.disabled) return;
+    saveBtn.disabled = true;
     try {
       await withFlash(() => api(acc ? "/admin/accounts/" + a.id : "/admin/accounts", {
         method: acc ? "PUT" : "POST",
         body: JSON.stringify(body)
       }), acc ? "账号已保存" : "账号已新增");
       closeModal();
-    } catch (err) { /* flash 已提示 */ }
+    } catch (err) { /* flash 已提示 */ } finally {
+      saveBtn.disabled = false;
+    }
   };
 }
 
@@ -604,6 +652,9 @@ $("accountImport").onclick = () => {
     try { parsed = JSON.parse($("frmImport").value); } catch (err) { flash("JSON 解析失败：" + err.message, false); return; }
     const accounts = Array.isArray(parsed) ? parsed : (parsed.accounts || []);
     if (!accounts.length) { flash("没有可导入的账号", false); return; }
+    const importBtn = $("frmImportSave");
+    if (importBtn.disabled) return;
+    importBtn.disabled = true;
     try {
       const data = await withFlash(async () => {
         const res = await api("/admin/accounts/import", { method: "POST", body: JSON.stringify({ accounts: accounts }) });
@@ -612,7 +663,9 @@ $("accountImport").onclick = () => {
       }, "");
       closeModal();
       return data;
-    } catch (err) { /* flash 已提示 */ }
+    } catch (err) { /* flash 已提示 */ } finally {
+      importBtn.disabled = false;
+    }
   };
 };
 
@@ -648,10 +701,15 @@ function modelForm(model) {
       remark: $("mRemark").value.trim()
     };
     if (!body.model_id) { flash("Model ID 必填", false); return; }
+    const mSaveBtn = $("mSave");
+    if (mSaveBtn.disabled) return;
+    mSaveBtn.disabled = true;
     try {
       await withFlash(() => api("/admin/models", { method: "PUT", body: JSON.stringify(body) }), "模型已保存");
       closeModal();
-    } catch (err) { /* flash 已提示 */ }
+    } catch (err) { /* flash 已提示 */ } finally {
+      mSaveBtn.disabled = false;
+    }
   };
 }
 $("modelNew").onclick = () => modelForm(null);

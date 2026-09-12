@@ -70,6 +70,7 @@ th { color: var(--muted); font-weight: 600; background: #121a30; position: stick
 .actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .actions button { padding: 5px 8px; font-size: 12px; }
 .gate { position: fixed; inset: 0; background: #0b1020ee; display: flex; align-items: center; justify-content: center; z-index: 20; }
+.gate.hidden { display: none; }
 .gate .box { width: min(430px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
 .hidden { display: none; }
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -90,8 +91,15 @@ th { color: var(--muted); font-weight: 600; background: #121a30; position: stick
 .kv .k { color: var(--muted); font-size: 12px; }
 pre { margin: 0; padding: 12px; background: #0e1730; border: 1px solid var(--line); border-radius: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
 .modal { position: fixed; inset: 0; background: #060a16dd; display: flex; align-items: flex-start; justify-content: center; z-index: 30; overflow: auto; padding: 3vh 12px; }
-.modal .box { width: min(900px, 96vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
-.modal h3 { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 15px; display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.modal.hidden { display: none; }
+.modal:not(.hidden) { overscroll-behavior: contain; }
+body.modal-open { overflow: hidden; }
+.modal .box { width: min(900px, 96vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: flex; flex-direction: column; max-height: 94vh; }
+.modal h3 { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 15px; display: flex; justify-content: space-between; gap: 10px; align-items: center; flex: none; background: var(--panel); border-radius: 16px 16px 0 0; position: relative; z-index: 1; }
+.modal .modal-close { flex: none; position: relative; z-index: 2; }
+.modal #modalBody { overflow: auto; padding-bottom: 14px; }
+.modal #modalBody .body { padding: 0 14px 14px; }
+.modal #modalBody .kv { padding: 14px; }
 .strength { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .strength.weak { background: #3a1520; color: #fecaca; }
 .strength.good { background: #3a2f10; color: #fde68a; }
