@@ -78,3 +78,28 @@ func isUpstreamModelUnavailable(raw []byte) bool {
 func isUpstreamRequestError(raw []byte) bool {
 	return isUnapprovedChannel(raw) || isUpstreamModelUnavailable(raw)
 }
+
+func isModelQuotaExhausted(status int, raw []byte) bool {
+	if status == 429 {
+		return true
+	}
+	s := strings.ToLower(string(raw))
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "11102") || strings.Contains(s, "11128") {
+		return false
+	}
+	keys := []string{
+		"quota", "rate limit", "rate_limit", "too many requests",
+		"insufficient", "exhausted", "dosage", "overloaded",
+		"额度", "余量", "用量已", "次数", "配额", "达上限", "超限", "用尽",
+		"不足", "限流", "频繁", "用量不足", "套餐",
+	}
+	for _, k := range keys {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}

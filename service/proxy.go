@@ -180,7 +180,7 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 	var lastErr string
 
 	for i := 0; i < retries; i++ {
-		acc, err := p.rotator.Next(exclude)
+		acc, err := p.rotator.NextFor(exclude, meta.UpstreamModel)
 		if err != nil {
 			lastErr = err.Error()
 			break
@@ -220,7 +220,11 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Sprintf("upstream %d: %s", resp.StatusCode, clip(raw, 200))
-			p.rotator.MarkFailure(acc, lastErr)
+			if isModelQuotaExhausted(resp.StatusCode, raw) {
+				p.rotator.MarkModelExhausted(acc, meta.UpstreamModel, lastErr)
+			} else {
+				p.rotator.MarkFailure(acc, lastErr)
+			}
 			continue
 		}
 
@@ -245,6 +249,10 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 				raw, _ = io.ReadAll(resp.Body)
 				resp.Body.Close()
 				lastErr = fmt.Sprintf("upstream %d: %s", resp.StatusCode, clip(raw, 200))
+			}
+			if isModelQuotaExhausted(resp.StatusCode, raw) {
+				p.rotator.MarkModelExhausted(acc, meta.UpstreamModel, lastErr)
+				continue
 			}
 			if isUpstreamRequestError(raw) {
 				global.CORE_LOG.Warn("upstream rejected request without burning account", zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
@@ -274,7 +282,7 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 }
 
 func (p *Proxy) commitSuccess(c *gin.Context, acc *model.Account, resp *http.Response, meta *ChatRequestMeta, start time.Time) {
-	p.rotator.MarkSuccess(acc)
+	p.rotator.MarkSuccessFor(acc, meta.UpstreamModel)
 	usage, writeErr := p.writeResponse(c, resp, meta)
 	if writeErr != nil {
 		global.CORE_LOG.Warn("write upstream response failed", zap.Error(writeErr))
@@ -441,14 +449,7 @@ func stripNonOpenAI(chunk map[string]any) {
 		}
 	}
 	if usage, ok := chunk["usage"].(map[string]any); ok {
-		for _, key := range []string{
-			"credit", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
-			"cache_read_input_tokens", "cache_creation_input_tokens",
-			"prompt_cache_write_tokens", "completion_thinking_tokens",
-			"cached_tokens", "prompt_tokens_details", "completion_tokens_details",
-		} {
-			delete(usage, key)
-		}
+		delete(usage, "credit")
 	}
 }
 

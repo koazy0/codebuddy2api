@@ -561,6 +561,7 @@ func (a *responsesAdapter) full(status string) map[string]any {
 		usage["output_tokens"] = a.usage.CompletionTokens
 		usage["total_tokens"] = a.usage.TotalTokens
 	}
+	attachResponsesCacheUsage(usage, a.usage)
 	return map[string]any{
 		"id":         a.id,
 		"object":     "response",
@@ -607,6 +608,11 @@ func (a *anthropicAdapter) start() {
 	if a.usage != nil {
 		input = a.usage.PromptTokens
 	}
+	usage := map[string]any{
+		"input_tokens":  input,
+		"output_tokens": 0,
+	}
+	attachAnthropicCacheUsage(usage, a.usage)
 	a.emit("message_start", map[string]any{
 		"message": map[string]any{
 			"id":            a.id,
@@ -616,10 +622,7 @@ func (a *anthropicAdapter) start() {
 			"model":         a.model,
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage": map[string]any{
-				"input_tokens":  input,
-				"output_tokens": 0,
-			},
+			"usage":         usage,
 		},
 	})
 }
@@ -779,12 +782,14 @@ func (a *anthropicAdapter) finish() error {
 	if a.usage != nil {
 		outTokens = a.usage.CompletionTokens
 	}
+	usage := map[string]any{"output_tokens": outTokens}
+	attachAnthropicCacheUsage(usage, a.usage)
 	a.emit("message_delta", map[string]any{
 		"delta": map[string]any{
 			"stop_reason":   mapAnthropicStop(a.finishReason),
 			"stop_sequence": nil,
 		},
-		"usage": map[string]any{"output_tokens": outTokens},
+		"usage": usage,
 	})
 	a.emit("message_stop", map[string]any{})
 	return a.err

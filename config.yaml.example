@@ -11,7 +11,7 @@ gateway:
     inject-reasoning: false
     timeout-seconds: 300
     max-retries: 3
-    rotate: round_robin
+    rotate: sticky  # 同一模型粘在一个号上吃缓存；额度/模型配额用尽再切下一个
     trust-env-proxy: false
     proxy: ""
     model-alias:

@@ -1,6 +1,16 @@
 package service
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"codebuddy-gateway/global"
+	"codebuddy-gateway/model"
+)
 
 func TestParseUserResource(t *testing.T) {
 	raw := []byte(`{
@@ -90,4 +100,54 @@ func TestEstimateCredit(t *testing.T) {
 	if estimateCredit(1_000_000, 0) != 45 {
 		t.Fatalf("input %v", estimateCredit(1_000_000, 0))
 	}
+}
+
+func TestFetchUserResourceByJWT(t *testing.T) {
+	raw := `{
+	  "code": 0,
+	  "data": {
+	    "Response": {
+	      "Data": {
+	        "Accounts": [
+	          {
+	            "PackageName": "CodeBuddy个人体验版",
+	            "CapacityType": 4,
+	            "CycleCapacityRemainPrecise": "12.5",
+	            "CycleCapacitySize": 500
+	          }
+	        ]
+	      }
+	    }
+	  }
+	}`
+	old := global.CORE_CONFIG.Gateway.Upstream
+	global.CORE_CONFIG.Gateway.Upstream = "http://codebuddy.test"
+	t.Cleanup(func() { global.CORE_CONFIG.Gateway.Upstream = old })
+	client := &UpstreamClient{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v2/billing/meter/get-user-resource" {
+			t.Errorf("path=%s", req.URL.Path)
+		}
+		if !strings.HasPrefix(req.Header.Get("Authorization"), "Bearer jwt-token") {
+			t.Errorf("authorization=%s", req.Header.Get("Authorization"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(raw)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}}
+	snap, err := client.FetchUserResourceByJWT(context.Background(), &model.Account{JWT: "jwt-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.MonthlyRemain != 12.5 || snap.MonthlyTotal != 500 {
+		t.Fatalf("%+v", snap)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

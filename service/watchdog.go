@@ -127,30 +127,30 @@ func (w *Watchdog) SyncAccountCredit(ctx context.Context, acc *model.Account) er
 	checkCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	if strings.TrimSpace(acc.SessionCookie) != "" {
-		snap, err := w.client.FetchUserResource(checkCtx, acc.SessionCookie)
-		if err != nil {
-			if notify, notifyErr := w.client.CheckDosage(checkCtx, acc); notifyErr == nil && notify != nil {
-				_ = model.SaveDosageNotify(acc.ID, notify.Code, firstNonEmpty(notify.Zh, notify.En))
-				if notify.Code != 0 {
-					return fmt.Errorf("dosage notify code %d: %s", notify.Code, firstNonEmpty(notify.Zh, notify.En))
-				}
-			}
-			return err
-		}
+	snap, err := w.client.FetchAccountCredit(checkCtx, acc)
+	if err == nil && snap != nil {
 		return model.SaveCreditSnapshot(acc.ID, *snap)
 	}
 
-	notify, err := w.client.CheckDosage(checkCtx, acc)
+	notify, notifyErr := w.client.CheckDosage(checkCtx, acc)
+	if notifyErr == nil && notify != nil {
+		msg := firstNonEmpty(notify.Zh, notify.En)
+		_ = model.SaveDosageNotify(acc.ID, notify.Code, msg)
+		if notify.Code != 0 {
+			return fmt.Errorf("dosage notify code %d: %s", notify.Code, msg)
+		}
+		if err != nil {
+			global.CORE_LOG.Warn("credit snapshot unavailable, dosage only",
+				zap.Uint("account_id", acc.ID),
+				zap.Error(err),
+			)
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	msg := firstNonEmpty(notify.Zh, notify.En)
-	_ = model.SaveDosageNotify(acc.ID, notify.Code, msg)
-	if notify.Code != 0 {
-		return fmt.Errorf("dosage notify code %d: %s", notify.Code, msg)
-	}
-	return nil
+	return notifyErr
 }
 
 func firstNonEmpty(values ...string) string {

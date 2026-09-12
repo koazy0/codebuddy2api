@@ -95,6 +95,50 @@ func (c *UpstreamClient) FetchUserResource(ctx context.Context, sessionCookie st
 	return snap, nil
 }
 
+func (c *UpstreamClient) FetchUserResourceByJWT(ctx context.Context, acc *model.Account) (*model.CreditSnapshot, error) {
+	if acc == nil || strings.TrimSpace(acc.JWT) == "" {
+		return nil, fmt.Errorf("user-resource jwt: empty token")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(global.CORE_CONFIG.Gateway.UpstreamBase(), "/v2/billing/meter/get-user-resource"), strings.NewReader("{}"))
+	if err != nil {
+		return nil, err
+	}
+	applyCodeBuddyHeaders(req, acc.JWT, global.CORE_CONFIG.CodeBuddy.HeaderAgentIntent())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("user-resource jwt http %d: %s", resp.StatusCode, clip(raw, 300))
+	}
+	return ParseUserResource(raw)
+}
+
+func (c *UpstreamClient) FetchAccountCredit(ctx context.Context, acc *model.Account) (*model.CreditSnapshot, error) {
+	var last error
+	if acc != nil && strings.TrimSpace(acc.SessionCookie) != "" {
+		snap, err := c.FetchUserResource(ctx, acc.SessionCookie)
+		if err == nil {
+			return snap, nil
+		}
+		last = err
+	}
+	snap, err := c.FetchUserResourceByJWT(ctx, acc)
+	if err == nil {
+		return snap, nil
+	}
+	if last == nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%v; jwt: %w", last, err)
+}
+
 func normalizeSessionCookie(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

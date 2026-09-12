@@ -51,11 +51,9 @@ func encodeChatJSON(result *ChatResult) ([]byte, error) {
 		"completion_tokens": result.Usage.CompletionTokens,
 		"total_tokens":      result.Usage.TotalTokens,
 	}
+	attachChatCacheUsage(usageObj, result.Usage)
 	if global.CORE_CONFIG.Gateway.Passthrough {
 		usageObj["credit"] = result.Usage.Credit
-		usageObj["prompt_cache_hit_tokens"] = result.Usage.CacheHitTokens
-		usageObj["prompt_cache_miss_tokens"] = result.Usage.CacheMissTokens
-		usageObj["completion_thinking_tokens"] = result.Usage.ThinkingTokens
 	}
 	finish := result.FinishReason
 	if finish == "" {
@@ -143,11 +141,15 @@ func encodeResponsesJSON(result *ChatResult) ([]byte, error) {
 		"status":     status,
 		"model":      result.Model,
 		"output":     output,
-		"usage": map[string]any{
-			"input_tokens":  result.Usage.PromptTokens,
-			"output_tokens": result.Usage.CompletionTokens,
-			"total_tokens":  result.Usage.TotalTokens,
-		},
+		"usage": func() map[string]any {
+			usage := map[string]any{
+				"input_tokens":  result.Usage.PromptTokens,
+				"output_tokens": result.Usage.CompletionTokens,
+				"total_tokens":  result.Usage.TotalTokens,
+			}
+			attachResponsesCacheUsage(usage, result.Usage)
+			return usage
+		}(),
 	}
 	return json.Marshal(resp)
 }
@@ -198,10 +200,14 @@ func encodeAnthropicJSON(result *ChatResult) ([]byte, error) {
 		"model":         result.Model,
 		"stop_reason":   mapAnthropicStop(result.FinishReason),
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  result.Usage.PromptTokens,
-			"output_tokens": result.Usage.CompletionTokens,
-		},
+		"usage": func() map[string]any {
+			usage := map[string]any{
+				"input_tokens":  result.Usage.PromptTokens,
+				"output_tokens": result.Usage.CompletionTokens,
+			}
+			attachAnthropicCacheUsage(usage, result.Usage)
+			return usage
+		}(),
 	}
 	return json.Marshal(resp)
 }

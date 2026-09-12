@@ -81,3 +81,21 @@ func TestAggregateSSE(t *testing.T) {
 		t.Fatalf("usage=%+v", usage)
 	}
 }
+
+func TestRewriteSSELineKeepsCacheFields(t *testing.T) {
+	global.CORE_CONFIG.Gateway.Passthrough = false
+	line := `data: {"model":"ep-xxx","choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"credit":1.2,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":2,"prompt_tokens_details":{"cached_tokens":8}}}`
+	out, usage := rewriteSSELine(line, "glm-5.3")
+	if strings.Contains(out, `"credit"`) {
+		t.Fatalf("credit should still be stripped: %s", out)
+	}
+	if !strings.Contains(out, `"prompt_cache_hit_tokens":8`) {
+		t.Fatalf("cache hit missing: %s", out)
+	}
+	if !strings.Contains(out, `"cached_tokens":8`) {
+		t.Fatalf("prompt_tokens_details missing: %s", out)
+	}
+	if usage == nil || usage.CacheHitTokens != 8 || usage.CacheMissTokens != 2 {
+		t.Fatalf("usage=%+v", usage)
+	}
+}

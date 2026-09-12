@@ -603,3 +603,58 @@ func TestUnattendedRuntimeAndApplyPatchHint(t *testing.T) {
 		t.Fatalf("missing unattended runtime note: %v", body["messages"])
 	}
 }
+
+func TestEncodeChatJSONIncludesCacheFields(t *testing.T) {
+	global.CORE_CONFIG.Gateway.Passthrough = false
+	raw, err := encodeChatJSON(&ChatResult{
+		ID:           "chat_1",
+		Model:        "deepseek-v4.1-flash",
+		Created:      1,
+		Content:      "ok",
+		FinishReason: "stop",
+		Usage: &parsedUsage{
+			PromptTokens:     10,
+			CompletionTokens: 2,
+			TotalTokens:      12,
+			CacheHitTokens:   8,
+			CacheMissTokens:  2,
+			ThinkingTokens:   3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for _, want := range []string{
+		`"prompt_cache_hit_tokens":8`,
+		`"prompt_cache_miss_tokens":2`,
+		`"cached_tokens":8`,
+		`"prompt_tokens_details":{"cached_tokens":8}`,
+		`"reasoning_tokens":3`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %s in %s", want, s)
+		}
+	}
+	if strings.Contains(s, `"credit"`) {
+		t.Fatalf("credit leaked without passthrough: %s", s)
+	}
+}
+
+func TestResponsesStreamAdapterIncludesCacheUsage(t *testing.T) {
+	var buf bytes.Buffer
+	ad := newStreamAdapter(ProtocolResponses, &buf, nil, "glm-5.3")
+	ad.start()
+	ad.onText("ok")
+	ad.setUsage(&parsedUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, CacheHitTokens: 8, CacheMissTokens: 2})
+	if err := ad.finish(); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, `"prompt_cache_hit_tokens":8`) {
+		t.Fatalf("responses stream cache missing: %s", s)
+	}
+	if !strings.Contains(s, `"cached_tokens":8`) {
+		t.Fatalf("input_tokens_details missing: %s", s)
+	}
+}
