@@ -738,6 +738,14 @@ async function taskCenter(id, acc) {
           body: JSON.stringify({}),
           timeoutMs: 900000
         });
+        // 后端的前置校验（缺 userId、账号正忙）走 error 字段而不是 HTTP 错误码，
+        // 直接展示它，否则用户只看到「领取 0 个」而不知道原因。
+        if (r.error) {
+          msg(r.error, false);
+          render(await api(`/admin/accounts/${id}/tasks`));
+          e.target.disabled = false;
+          return;
+        }
         const failed = (r.results || []).filter(x => x.error).length;
         msg(`完成：领取 ${(r.claimed || []).length} 个任务，+${r.credit_gained} 分 +${r.energy_gained} 能${failed ? `，${failed} 项失败` : ""}`, !failed);
         render(await api(`/admin/accounts/${id}/tasks`));

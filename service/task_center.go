@@ -70,15 +70,21 @@ func lockForAccount(id uint) *sync.Mutex {
 //
 // only 非空时只跑指定任务码（用于面板里点单项）；为空则跑全部可自动化任务。
 func (c *UpstreamClient) RunAccountTasks(ctx context.Context, acc *model.Account, only []string) *TaskSummary {
-	mu := lockForAccount(acc.ID)
-	mu.Lock()
-	defer mu.Unlock()
-
 	summary := &TaskSummary{
 		AccountID: acc.ID,
 		Account:   accountDisplayName(acc),
 		Results:   make([]TaskRunResult, 0, len(taskRunners)),
 	}
+
+	// 用 TryLock 而不是 Lock：一轮任务含多处节流等待，跑满要 1-2 分钟。
+	// 若这里阻塞等待，用户在任务进行中再点一次就会「挂住不动」——
+	// 看起来像卡死，实际只是在排队。直接告诉他原因更有用。
+	mu := lockForAccount(acc.ID)
+	if !mu.TryLock() {
+		summary.Err = "该账号已有任务正在执行，请等待当前这轮结束"
+		return summary
+	}
+	defer mu.Unlock()
 
 	// 前置校验：没有 userId 就不要往下跑。
 	//

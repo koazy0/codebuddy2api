@@ -328,3 +328,32 @@ func TestRunAccountTasksStopsOnCancelledContext(t *testing.T) {
 		t.Fatal("异常输入应给出 Err")
 	}
 }
+
+// TestConcurrentRunReturnsBusy 锁定并发语义：同一账号的一轮任务在跑时，
+// 第二个请求必须**立即**返回「已有任务在执行」，而不是阻塞排队。
+//
+// 为什么这条重要：一轮任务含多处节流等待，跑满 1-2 分钟。旧实现用
+// mu.Lock() 阻塞等待，用户在任务进行中再点一次就会挂住 —— 看起来像
+// 卡死，实际只是在排队，而且页面不会给出任何解释。
+func TestConcurrentRunReturnsBusy(t *testing.T) {
+	c := &UpstreamClient{}
+	acc := &model.Account{Name: "busy-probe"}
+	acc.ID = 993
+
+	// 手工占住该账号的锁，模拟一轮任务正在执行。
+	mu := lockForAccount(acc.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	done := make(chan *TaskSummary, 1)
+	go func() { done <- c.RunAccountTasks(context.Background(), acc, nil) }()
+
+	select {
+	case s := <-done:
+		if !strings.Contains(s.Err, "正在执行") {
+			t.Fatalf("应立即回报「正在执行」，实际: %q", s.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("第二个请求被阻塞了 —— 应立即可返回")
+	}
+}
