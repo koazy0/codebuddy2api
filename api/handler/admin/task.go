@@ -149,3 +149,40 @@ func pendingOf(tasks []service.GrowthTask) int64 {
 	}
 	return total
 }
+
+// ---------------------------------------------------------------------------
+// 批量执行
+//
+// 设计要点：接口只启动、立刻返回，实际执行在后台跑，前端轮询进度。
+// 原因是单账号要 1-2 分钟，多账号串在一个 HTTP 请求里必然被
+// 反向代理或隧道（cloudflared 等）按空闲超时掐断。
+// ---------------------------------------------------------------------------
+
+type taskBatchReq struct {
+	// Codes 为空时跑全部可自动化任务。
+	Codes []string `json:"codes"`
+	// Concurrency 并发账号数，缺省 3，上限 8。
+	Concurrency int `json:"concurrency"`
+}
+
+// TaskBatchStart 启动一批账号的任务执行。
+func TaskBatchStart(c *gin.Context) {
+	var req taskBatchReq
+	_ = c.ShouldBindJSON(&req)
+	state, err := service.StartBatchTasks(req.Codes, req.Concurrency)
+	if err != nil {
+		response.Fail(c, err.Error())
+		return
+	}
+	response.Success(c, state)
+}
+
+// TaskBatchStatus 查询当前批量执行的进度。
+func TaskBatchStatus(c *gin.Context) {
+	state := service.BatchTasksStatus()
+	if state == nil {
+		response.Success(c, gin.H{"none": true})
+		return
+	}
+	response.Success(c, state)
+}

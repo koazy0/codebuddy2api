@@ -109,6 +109,9 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/accounts/:id/tasks/accept", TaskAcceptAll)
 	rg.POST("/accounts/:id/tasks/:code/claim", TaskClaim)
 	rg.GET("/tasks/catalog", TaskCatalogList)
+	// 批量：启动即返回，进度靠轮询
+	rg.POST("/tasks/batch", TaskBatchStart)
+	rg.GET("/tasks/batch", TaskBatchStatus)
 	rg.POST("/refresh", RefreshAll)
 	rg.POST("/sync-credit", SyncAllCredits)
 	rg.GET("/models", ListModels)

@@ -529,6 +529,80 @@ $("syncCredit").onclick = () => withFlash(async () => {
 }, "");
 // 看门狗：后端回 {round:{checked,recovered,disabled,skipped}, accounts:[...]}。
 // 三项统计都要看，尤其 disabled —— 那代表有账号刚被判死。
+// ---------------------------------------------------------------------------
+// 批量做任务
+//
+// 单账号要 1-2 分钟，多账号串在一个请求里必然被反向代理按空闲超时掐断，
+// 所以后端是「启动即返回 + 后台跑」，这里靠轮询看进度。
+// ---------------------------------------------------------------------------
+
+const BATCH_POLL_MS = 3000;
+let batchTimer = null;
+
+function stopBatchPoll() {
+  if (batchTimer) { clearInterval(batchTimer); batchTimer = null; }
+}
+
+function batchStatusText(s) {
+  if (!s) return "";
+  const parts = (s.results || []).map(r => {
+    const icon = r.status === "done" ? "✓" : r.status === "failed" ? "✕"
+      : r.status === "skipped" ? "—" : r.status === "running" ? "…" : "·";
+    const tail = r.message ? " " + esc(r.message) : "";
+    return `${icon} ${esc(r.account || ("#" + r.account_id))}${tail}`;
+  });
+  return parts.join("<br>");
+}
+
+async function batchTasksFlow() {
+  const st = await api("/admin/tasks/batch", { method: "POST", body: JSON.stringify({}) });
+  modal("批量做任务", `
+    <div class="body">
+      <p class="tiny">共 <b>${st.total}</b> 个账号，并发 <b>${st.concurrent}</b>。
+        单账号约 1-2 分钟，可关闭本窗口，任务在后台继续。</p>
+      <div class="row" style="margin:10px 0;">
+        <span id="batchProgress" class="tiny"></span>
+      </div>
+      <div class="bar" style="margin-bottom:10px"><i id="batchBar" style="width:0%"></i></div>
+      <div id="batchList" class="tiny" style="max-height:48vh;overflow:auto;line-height:1.9"></div>
+    </div>`);
+
+  const paint = (s) => {
+    const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+    const el = $("batchProgress");
+    if (el) {
+      el.textContent = `${s.done}/${s.total} 完成 · +${s.credit_gained} 分 +${s.energy_gained} 能`
+        + (s.running ? "" : "（已结束）");
+    }
+    const bar = $("batchBar");
+    if (bar) bar.style.width = pct + "%";
+    const list = $("batchList");
+    if (list) list.innerHTML = batchStatusText(s);
+  };
+
+  const poll = async () => {
+    try {
+      const s = await api("/admin/tasks/batch");
+      if (s && s.none) { stopBatchPoll(); return; }
+      paint(s);
+      if (!s.running) {
+        stopBatchPoll();
+        flash(`批量任务完成：+${s.credit_gained} 分 +${s.energy_gained} 能`, true);
+        loadAll().catch(() => {});
+      }
+    } catch (err) {
+      stopBatchPoll();
+      flash(err.message || String(err), false);
+    }
+  };
+
+  paint(st);
+  stopBatchPoll();
+  batchTimer = setInterval(poll, BATCH_POLL_MS);
+  poll();
+}
+$("batchTasks").onclick = () => batchTasksFlow().catch(err => flash(err.message || String(err), false));
+
 $("runWatchdog").onclick = () => withFlash(async () => {
   const r = await api("/admin/watchdog", { method: "POST", timeoutMs: 180000 });
   const round = (r && r.round) || {};

@@ -240,12 +240,17 @@ curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/
 | POST | `/admin/accounts/:id/tasks/accept` | 批量报名全部未接受任务 |
 | POST | `/admin/accounts/:id/tasks/:code/claim` | 单独领取某任务奖励 |
 | GET | `/admin/tasks/catalog` | 可自动化任务清单 |
+| POST | `/admin/tasks/batch` | **批量做任务**：对全部未停用账号启动一轮，body `{"codes":[...],"concurrency":3}` |
 
 ### 积分任务说明
 
 任务进度由上游按**行为事件**异步聚合，不是同步返回的。所以「一键完成」的流程是：先批量报名（未报名时 `target` 恒为 0，上报不计数），再按依赖顺序上报各任务的事件链，等约 3 秒让计分落定，最后对达标任务自动领奖。全程幂等，重复执行不会重复加分。
 
-面板上账号行的「积分任务」按钮即入口。已知两项无法自动完成：`Expert_Philanthropy` 没有可用进度判据；`black_cat`（夜猫子）只在 23:00–08:00 窗口内计分。
+面板上账号行的「积分任务」按钮做单个账号；工具栏的「批量做任务」按钮做全部账号。
+
+批量是**异步**的：接口只启动并立刻返回，实际执行在后台，前端每 3 秒轮询 `GET /admin/tasks/batch` 看进度。之所以不做成同步接口——单账号要 1-2 分钟，多账号串在一个 HTTP 请求里会被反向代理或隧道按空闲超时掐断。同一时刻只允许一批，重复启动会被拒，避免同一账号被两轮抢着上报事件。
+
+已知两项无法自动完成：`Expert_Philanthropy` 没有可用进度判据；`black_cat`（夜猫子）只在 23:00–08:00 窗口内计分。
 
 ## Docker
 
