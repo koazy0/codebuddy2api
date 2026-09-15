@@ -169,13 +169,24 @@ func blockKey(accountID uint, modelName string) string {
 	return fmt.Sprintf("%d|%s", accountID, modelName)
 }
 
+// accountHasCredit 判断账号是否有可用额度。
+//
+// 「没同步过」不能当成「没额度」：CreditRemain 的零值是 0，把未同步的账号
+// 判成无额度会让新导入的账号一上来就被跳过。只有真正拿到过账单快照、
+// 且剩余确实 <= 0，才算耗尽。
+//
+// 这是全项目唯一的额度判定入口：轮询、看门狗、批量任务都读它，
+// 避免各写一份导致「一处认为有额度、另一处认为没有」的分叉。
 func accountHasCredit(acc model.Account) bool {
-	// 没同步过账单时 remain 默认就是 0，不能当成没额度。
-	// 只有真正拉到过 user-resource 且剩余 <= 0，才跳过这个号。
 	if acc.CreditSyncedAt == nil {
 		return true
 	}
-	return acc.MonthlyCreditRemain+acc.OnetimeCreditRemain > 0
+	return creditRemainOf(acc) > 0
+}
+
+// creditRemainOf 汇总账号的可用额度（月度 + 一次性）。
+func creditRemainOf(acc model.Account) float64 {
+	return acc.MonthlyCreditRemain + acc.OnetimeCreditRemain
 }
 
 func pickLeastUsed(candidates []model.Account) model.Account {

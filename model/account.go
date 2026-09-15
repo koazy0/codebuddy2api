@@ -77,6 +77,12 @@ type Account struct {
 	// 行为事件上报缺了它会被上游静默丢弃（返回 200 但不计进度）。
 	// 导入路径会直接落库；未落库的账号由 UID() 从 JWT 实时解析。
 	UserID string `gorm:"size:64;index" json:"user_id"`
+	// ManuallyDisabled 标记「由人手动停用」。
+	//
+	// 区分这个状态是必要的：看门狗会按额度自动停用/启用账号，
+	// 但它绝不能把人工停用的账号自动启回来——那会覆盖掉人明确的意图。
+	// 手动停用一律由人手动恢复，自动逻辑只管理自己造成的停用。
+	ManuallyDisabled bool `gorm:"default:false" json:"manually_disabled"`
 }
 
 func (Account) TableName() string { return "accounts" }
@@ -389,4 +395,28 @@ func SaveDosageNotify(id uint, code int, msg string) error {
 
 func AccountNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+// MarkAccountEnabled 把账号恢复为启用并清干净失败痕迹。
+// 供看门狗在「检测到额度恢复」时使用——这是额度驱动的正向动作。
+func MarkAccountEnabled(id uint) error {
+	return MustDB().Model(&Account{}).Where("id = ?", id).Updates(map[string]any{
+		"status":          AccountStatusEnabled,
+		"fail_count":      0,
+		"last_error":      "",
+		"cooldown_until":  nil,
+		"last_checked_at": time.Now(),
+	}).Error
+}
+
+// MarkAccountCreditExhausted 把账号转入冷却，原因记为额度耗尽。
+// 用 cooldown 而非 disabled：这是自动判定，必须与人工停用区分开，
+// 这样额度恢复后看门狗才能安全地自动启用它。
+func MarkAccountCreditExhausted(id uint, until time.Time) error {
+	return MustDB().Model(&Account{}).Where("id = ?", id).Updates(map[string]any{
+		"status":          AccountStatusCooldown,
+		"last_error":      "credit exhausted",
+		"cooldown_until":  until,
+		"last_checked_at": time.Now(),
+	}).Error
 }

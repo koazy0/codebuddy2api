@@ -42,6 +42,7 @@ func publicAccount(acc model.Account) gin.H {
 		"name":                  acc.Name,
 		"username":              acc.Username,
 		"status":                acc.Status,
+		"manually_disabled":     acc.ManuallyDisabled,
 		"weight":                acc.Weight,
 		"jwt":                   service.MaskToken(acc.JWT),
 		"refresh_token":         service.MaskToken(acc.RefreshToken),
@@ -290,6 +291,9 @@ func setAccountStatus(c *gin.Context, status string) {
 	acc.FailCount = 0
 	acc.LastError = ""
 	acc.CooldownUntil = nil
+	// 记录停用来源：人工停用的账号，自动逻辑（看门狗）不得擅自启用。
+	// 启用时清掉标记，恢复成自动可管理状态。
+	acc.ManuallyDisabled = status == model.AccountStatusDisabled
 	if err := model.UpdateAccount(acc); err != nil {
 		response.Fail(c, err.Error())
 		return

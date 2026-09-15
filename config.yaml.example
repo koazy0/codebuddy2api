@@ -56,6 +56,9 @@ watchdog:
     fail-threshold: 3
     cooldown-seconds: 600
     health-check: true
+    # sync-credit 只控制「是否打上游接口拉取额度」。
+    # 状态收敛（有额度→启用、无额度→冷却）始终执行，用库里已有的额度数据，
+    # 关掉它不会让账号卡在错误状态上。
     sync-credit: true
 
 sqlite:
