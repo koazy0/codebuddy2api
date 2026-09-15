@@ -81,9 +81,14 @@ type Account struct {
 
 func (Account) TableName() string { return "accounts" }
 
-// UID 返回成长中心任务用的 userId：优先落盘字段，缺失时从 JWT 的 sub 解析。
+// UID 返回成长中心任务用的 userId：优先用已解析的值，缺失时从 JWT 的 sub 解析。
 //
-// 之所以做回落：userId 是历史演进中新增的需求，老库里没有这一列的值；
+// 解析结果只缓存在内存（a.UserID），**不写库**：
+// JWT 解析是纯本地操作，开销可忽略，而每次任务调用都写一次库只会带来
+// 无谓的写放大与锁竞争。导入路径会把它直接落库（见 account_import），
+// 那种情况下一开始就有值，走不到这里。
+//
+// 之所以保留 JWT 回落：userId 是后加的需求，老库这一列是空的，
 // 而 JWT 的 sub 实测与 /v2/plugin/accounts 返回的 uid 完全一致，
 // 直接解析即可，不必为此多打一次上游请求。
 func (a *Account) UID() string {
@@ -93,9 +98,7 @@ func (a *Account) UID() string {
 	if a.UserID != "" {
 		return a.UserID
 	}
-	sub := jwtSubject(a.JWT)
-	a.UserID = sub
-	return sub
+	return jwtSubject(a.JWT)
 }
 
 func CreateAccount(acc *Account) error {
