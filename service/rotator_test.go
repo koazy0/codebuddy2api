@@ -8,6 +8,7 @@ import (
 	"codebuddy-gateway/global"
 	"codebuddy-gateway/model"
 
+	"go.uber.org/zap"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -24,13 +25,20 @@ func setupRotatorDB(t *testing.T) func() {
 	oldDB := global.CORE_DB
 	oldGW := global.CORE_CONFIG.Gateway
 	oldWD := global.CORE_CONFIG.Watchdog
+	oldLog := global.CORE_LOG
 	global.CORE_DB = db
+	// 部分被测路径会写日志（如额度状态收敛）。测试里给个非 nil logger，
+	// 否则 zap 在 nil receiver 上 panic，看起来像代码 bug 其实是环境问题。
+	if global.CORE_LOG == nil {
+		global.CORE_LOG = zap.NewNop()
+	}
 	global.CORE_CONFIG.Gateway.Rotate = "sticky"
 	global.CORE_CONFIG.Watchdog = config.Watchdog{CooldownSeconds: 600, FailThreshold: 3}
 	return func() {
 		global.CORE_DB = oldDB
 		global.CORE_CONFIG.Gateway = oldGW
 		global.CORE_CONFIG.Watchdog = oldWD
+		global.CORE_LOG = oldLog
 	}
 }
 

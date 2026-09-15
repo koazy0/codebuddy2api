@@ -67,16 +67,12 @@ func (w *Watchdog) RunOnce(ctx context.Context) WatchdogRound {
 			continue
 		}
 
-		// 冷却到期只解除「时间锁」，是否真正启用交给下面的额度判定。
-		// 旧实现直接在这里改成 enabled，会在额度仍为 0 时把账号放回可用池，
-		// 轮询再把它挑出来、调用失败、又进冷却——来回抖动。
-		if acc.Status == model.AccountStatusCooldown && acc.CooldownUntil != nil && now.After(*acc.CooldownUntil) {
-			acc.CooldownUntil = nil
-			acc.FailCount = 0
-			_ = model.UpdateAccount(&acc)
-			global.CORE_LOG.Info("watchdog cooldown expired, credit re-check pending",
-				zap.Uint("account_id", acc.ID), zap.String("name", acc.Name))
-		}
+		// 冷却到期的处理刻意留空：是否解除冷却由下面的额度判定统一决定。
+		//
+		// 旧实现在这里直接改成 enabled，会在额度仍为 0 时把账号放回可用池，
+		// 轮询选到它、调用失败、再进冷却——来回抖动。而「只清 cooldown_until
+		// 但保持 cooldown 状态」同样不对：状态没变，账号会永远卡在冷却里。
+		// 正确的做法是让额度说了算：有额度自然转 enabled，没额度就续上冷却。
 
 		if acc.Status == model.AccountStatusDisabled {
 			continue
@@ -251,6 +247,11 @@ func (w *Watchdog) reconcileCreditState(acc *model.Account) creditStateAction {
 				zap.Uint("account_id", acc.ID), zap.Error(err))
 			return creditStateUnchanged
 		}
+		// 同样同步内存，理由见 creditStateNowCooling 分支。
+		acc.Status = model.AccountStatusEnabled
+		acc.FailCount = 0
+		acc.LastError = ""
+		acc.CooldownUntil = nil
 		global.CORE_LOG.Info("watchdog credit available, re-enabled",
 			zap.Uint("account_id", acc.ID),
 			zap.String("name", acc.Name),
@@ -258,8 +259,11 @@ func (w *Watchdog) reconcileCreditState(acc *model.Account) creditStateAction {
 		return creditStateNowEnabled
 	}
 
-	// 无额度：已经处于冷却就不用重复写。
-	if acc.Status == model.AccountStatusCooldown {
+	// 无额度：已经在冷却中，且冷却时间还没到，就不用重复写。
+	// 但冷却时间已过（或没设）时必须续期——否则账号会停在「冷却已过期」
+	// 这个中间态：轮询的列表查询会把过期的冷却视为可用，于是又被选中。
+	if acc.Status == model.AccountStatusCooldown &&
+		acc.CooldownUntil != nil && acc.CooldownUntil.After(time.Now()) {
 		return creditStateUnchanged
 	}
 	until := nextCreditRecoveryTime(time.Now())
@@ -268,6 +272,14 @@ func (w *Watchdog) reconcileCreditState(acc *model.Account) creditStateAction {
 			zap.Uint("account_id", acc.ID), zap.Error(err))
 		return creditStateUnchanged
 	}
+	// 必须同步内存副本。
+	//
+	// 后面还有 model.UpdateAccount(&acc)（GORM Save，整行写回）：
+	// 如果这里不同步，那次写入会拿内存里的旧值把刚落库的 cooldown 覆盖掉，
+	// 表现为「日志说已冷却、库里仍是 enabled」。这个坑正是靠实测抓出来的。
+	acc.Status = model.AccountStatusCooldown
+	acc.CooldownUntil = &until
+	acc.LastError = "credit exhausted"
 	global.CORE_LOG.Info("watchdog credit exhausted, cooling down",
 		zap.Uint("account_id", acc.ID),
 		zap.String("name", acc.Name),
