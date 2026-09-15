@@ -98,6 +98,12 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/accounts/:id/sync-credit", SyncAccountCredit)
 	rg.POST("/accounts/:id/enable", EnableAccount)
 	rg.POST("/accounts/:id/disable", DisableAccount)
+	// 成长中心任务中心
+	rg.GET("/accounts/:id/tasks", TaskList)
+	rg.POST("/accounts/:id/tasks/run", TaskRun)
+	rg.POST("/accounts/:id/tasks/accept", TaskAcceptAll)
+	rg.POST("/accounts/:id/tasks/:code/claim", TaskClaim)
+	rg.GET("/tasks/catalog", TaskCatalogList)
 	rg.POST("/refresh", RefreshAll)
 	rg.POST("/sync-credit", SyncAllCredits)
 	rg.GET("/models", ListModels)

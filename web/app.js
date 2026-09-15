@@ -204,6 +204,7 @@ function renderAccounts(accounts) {
         <button class="ghost" data-act="edit" data-id="${acc.id}">编辑</button>
         <button class="ghost" data-act="refresh" data-id="${acc.id}">刷新票据</button>
         <button class="ghost" data-act="sync" data-id="${acc.id}">同步额度</button>
+        <button class="ghost" data-act="tasks" data-id="${acc.id}">积分任务</button>
         <button class="${acc.status === "enabled" ? "danger" : "ghost"}" data-act="${acc.status === "enabled" ? "disable" : "enable"}" data-id="${acc.id}">${acc.status === "enabled" ? "停用" : "启用"}</button>
         <button class="danger" data-act="delete" data-id="${acc.id}">删除</button>
       </td>
@@ -627,6 +628,7 @@ async function accountAction(btn) {
   const act = btn.dataset.act;
   const acc = state.accounts.find(a => Number(a.id) === Number(id));
   if (act === "edit") { accountForm(acc); return; }
+  if (act === "tasks") { await taskCenter(id, acc); return; }
   if (act === "delete") {
     if (!confirm("删除账号 #" + id + "？")) return;
     await withFlash(() => api("/admin/accounts/" + id, { method: "DELETE" }), "账号 #" + id + " 已删除");
@@ -636,6 +638,99 @@ async function accountAction(btn) {
     : act === "sync" ? `/admin/accounts/${id}/sync-credit`
     : `/admin/accounts/${id}/${act}`;
   await withFlash(() => api(path, { method: "POST" }), "账号 #" + id + " 已更新");
+}
+
+// ---------------------------------------------------------------------------
+// 积分任务中心
+//
+// 任务进度由上游按「行为事件」异步聚合，所以跑完要等一下才看到结果。
+// 「一键完成」= 报名 → 上报行为 → 等计分 → 自动领奖，全程幂等，可重复点。
+// ---------------------------------------------------------------------------
+
+function taskRows(tasks) {
+  if (!tasks || !tasks.length) return `<tr><td colspan="5" class="muted">没有任务</td></tr>`;
+  return tasks.map(t => {
+    const pct = t.target > 0 ? Math.min(100, Math.round((t.current / t.target) * 100)) : 0;
+    const bar = t.target > 0
+      ? `<div class="tbar"><i style="width:${pct}%"></i></div><span class="tiny">${t.current}/${t.target}</span>`
+      : `<span class="tiny muted">—</span>`;
+    const badge = t.claimed ? `<span class="badge ok">已领取</span>`
+      : t.claimable ? `<span class="badge warn">可领取</span>`
+      : `<span class="badge">未完成</span>`;
+    return `<tr>
+      <td><b>${esc(t.title || t.task_code)}</b><div class="tiny mono">${esc(t.task_code)}</div></td>
+      <td>${bar}</td>
+      <td>${badge}</td>
+      <td class="tiny">${t.credit ? "+" + t.credit + " 分" : ""}${t.energy ? " +" + t.energy + " 能" : ""}</td>
+      <td>${t.claimable ? `<button class="ghost" data-claim="${esc(t.task_code)}">领取</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function taskCenter(id, acc) {
+  modal("积分任务 · " + (acc ? (acc.name || acc.username) : ("#" + id)), `<div class="body"><p class="tiny">加载中…</p></div>`);
+  const render = (data) => {
+    const tasks = (data && data.tasks) || [];
+    const pending = (data && data.pending_credit) || 0;
+    const done = tasks.filter(t => t.claimed).length;
+    $("modalBody").innerHTML = `
+      <div class="body">
+        <p class="tiny">账号 <b>#${esc(String(id))}</b> · 已完成 ${done}/${tasks.length} · 待领合计 <b>${pending}</b> 分</p>
+        <div class="row" style="margin:10px 0;">
+          <button id="taskRun" type="button">一键完成全部</button>
+          <button id="taskAccept" class="ghost" type="button">全部报名</button>
+          <button id="taskRefresh" class="ghost" type="button">刷新</button>
+        </div>
+        <div id="taskMsg" class="tiny"></div>
+        <div style="max-height:52vh;overflow:auto;margin-top:8px">
+          <table class="data">
+            <thead><tr><th>任务</th><th>进度</th><th>状态</th><th>奖励</th><th></th></tr></thead>
+            <tbody id="taskBody">${taskRows(tasks)}</tbody>
+          </table>
+        </div>
+        <p class="tiny muted" style="margin-top:8px">任务进度由上游异步计分，执行后需等待数秒才会刷新。重复执行不会重复加分。</p>
+      </div>`;
+
+    const msg = (text, ok) => { const el = $("taskMsg"); if (el) { el.textContent = text; el.className = "tiny " + (ok === false ? "bad" : "ok"); } };
+
+    $("taskRefresh").onclick = async () => {
+      try { render(await api(`/admin/accounts/${id}/tasks`)); } catch (e) { msg(e.message, false); }
+    };
+    $("taskAccept").onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        const r = await api(`/admin/accounts/${id}/tasks/accept`, { method: "POST", timeoutMs: 120000 });
+        msg(`已报名 ${r.accepted} 个任务`, true);
+        render(await api(`/admin/accounts/${id}/tasks`));
+      } catch (err) { msg(err.message, false); e.target.disabled = false; }
+    };
+    $("taskRun").onclick = async (e) => {
+      e.target.disabled = true;
+      msg("正在执行… 各任务之间有节流间隔，可能需要 1-2 分钟，请勿关闭页面。");
+      try {
+        // 任务执行含多处节流等待，远超默认 15s，必须放宽超时。
+        const r = await api(`/admin/accounts/${id}/tasks/run`, {
+          method: "POST",
+          body: JSON.stringify({}),
+          timeoutMs: 900000
+        });
+        const failed = (r.results || []).filter(x => x.error).length;
+        msg(`完成：领取 ${(r.claimed || []).length} 个任务，+${r.credit_gained} 分 +${r.energy_gained} 能${failed ? `，${failed} 项失败` : ""}`, !failed);
+        render(await api(`/admin/accounts/${id}/tasks`));
+      } catch (err) { msg(err.message, false); e.target.disabled = false; }
+    };
+    $("taskBody").onclick = async (e) => {
+      const b = e.target.closest("button[data-claim]");
+      if (!b) return;
+      b.disabled = true;
+      try {
+        const r = await api(`/admin/accounts/${id}/tasks/${encodeURIComponent(b.dataset.claim)}/claim`, { method: "POST", timeoutMs: 60000 });
+        msg(r.already_claimed ? "该任务已领取过" : `已领取 +${r.credit} 分 +${r.energy} 能`, true);
+        render(await api(`/admin/accounts/${id}/tasks`));
+      } catch (err) { msg(err.message, false); b.disabled = false; }
+    };
+  };
+  render(await api(`/admin/accounts/${id}/tasks`));
 }
 $("accountBody").onclick = (e) => { const b = e.target.closest("button"); if (b) accountAction(b).catch(() => {}); };
 $("accountFullBody").onclick = (e) => { const b = e.target.closest("button"); if (b) accountAction(b).catch(() => {}); };

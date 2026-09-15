@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -9,6 +11,31 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// jwtSubject 从 JWT 载荷里取出 sub（= 成长中心的 userId）。
+// 解析失败返回空串——调用方按「没有 userId」处理，不外抛：
+// 拿不到 userId 只是事件可能不计数，不该让整个任务流程报错。
+func jwtSubject(token string) string {
+	token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "Bearer "))
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Sub)
+}
 
 const (
 	AccountStatusEnabled  = "enabled"
@@ -46,9 +73,30 @@ type Account struct {
 	DosageNotifyMsg     string     `gorm:"size:500" json:"dosage_notify_msg"`
 	CreditPackages      string     `gorm:"type:text" json:"credit_packages"`
 	Remark              string     `gorm:"size:500" json:"remark"`
+	// UserID 是成长中心任务用的 userId（= JWT sub / /v2/plugin/accounts 的 uid）。
+	// 行为事件上报缺了它会被上游静默丢弃（返回 200 但不计进度），
+	// 所以首次用到时由 service 层从 JWT 解析并回填。
+	UserID string `gorm:"size:64;index" json:"user_id"`
 }
 
 func (Account) TableName() string { return "accounts" }
+
+// UID 返回成长中心任务用的 userId：优先落盘字段，缺失时从 JWT 的 sub 解析。
+//
+// 之所以做回落：userId 是历史演进中新增的需求，老库里没有这一列的值；
+// 而 JWT 的 sub 实测与 /v2/plugin/accounts 返回的 uid 完全一致，
+// 直接解析即可，不必为此多打一次上游请求。
+func (a *Account) UID() string {
+	if a == nil {
+		return ""
+	}
+	if a.UserID != "" {
+		return a.UserID
+	}
+	sub := jwtSubject(a.JWT)
+	a.UserID = sub
+	return sub
+}
 
 func CreateAccount(acc *Account) error {
 	if acc.Status == "" {

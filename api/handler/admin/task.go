@@ -1,0 +1,151 @@
+package admin
+
+import (
+	"strconv"
+	"strings"
+
+	"codebuddy-gateway/api/response"
+	"codebuddy-gateway/model"
+	"codebuddy-gateway/service"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ---------------------------------------------------------------------------
+// 任务中心（成长中心积分任务）
+//
+// 接口对齐上游状态机的三个动作：
+//   - 查列表：看每个任务的进度 / 奖励 / 状态
+//   - 一键完成：accept → 上报行为事件 → 等计分 → 自动领奖
+//   - 手动领取：对已达标任务单独领奖
+//
+// 全部幂等：已领取的任务不会重复加分，重复调用安全。
+// ---------------------------------------------------------------------------
+
+// taskClient 拿到上游客户端单例。
+func taskClient() *service.UpstreamClient {
+	return service.DefaultClient
+}
+
+// TaskList 列出指定账号的成长任务。
+func TaskList(c *gin.Context) {
+	acc, ok := lookupAccount(c)
+	if !ok {
+		return
+	}
+	tasks, err := taskClient().GrowthListTasks(acc)
+	if err != nil {
+		response.Fail(c, "拉取任务列表失败: "+err.Error())
+		return
+	}
+	service.SortTasksByReward(tasks)
+	response.Success(c, gin.H{
+		"tasks":          tasks,
+		"pending_credit": pendingOf(tasks),
+	})
+}
+
+// TaskCatalogList 返回可一键完成的任务清单（面板用它解释每个任务做什么）。
+func TaskCatalogList(c *gin.Context) {
+	response.Success(c, gin.H{"catalog": service.TaskCatalog()})
+}
+
+type taskRunReq struct {
+	// Codes 为空时跑全部可自动化任务。
+	Codes []string `json:"codes"`
+}
+
+// TaskRun 一键完成：跑完动作链并自动领奖。
+func TaskRun(c *gin.Context) {
+	acc, ok := lookupAccount(c)
+	if !ok {
+		return
+	}
+	var req taskRunReq
+	// body 可为空（跑全部），解析失败不报错。
+	_ = c.ShouldBindJSON(&req)
+	summary := taskClient().RunAccountTasks(acc, req.Codes)
+	response.Success(c, summary)
+}
+
+// TaskClaim 单独领取某个已达标任务的奖励。
+func TaskClaim(c *gin.Context) {
+	acc, ok := lookupAccount(c)
+	if !ok {
+		return
+	}
+	code := strings.TrimSpace(c.Param("code"))
+	if code == "" {
+		response.Fail(c, "缺少任务码")
+		return
+	}
+	credit, energy, err := taskClient().GrowthClaimReward(acc, code)
+	if err != nil {
+		response.Fail(c, "领取失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{
+		"task_code": code, "credit": credit, "energy": energy,
+		"already_claimed": credit == 0 && energy == 0,
+	})
+}
+
+// TaskAcceptAll 批量报名全部未接受的任务。
+func TaskAcceptAll(c *gin.Context) {
+	acc, ok := lookupAccount(c)
+	if !ok {
+		return
+	}
+	tasks, err := taskClient().GrowthListTasks(acc)
+	if err != nil {
+		response.Fail(c, "拉取任务列表失败: "+err.Error())
+		return
+	}
+	var codes []string
+	for _, t := range tasks {
+		if t.Claimed || t.Locked {
+			continue
+		}
+		if t.AcceptStatus == "accepted" || t.AcceptStatus == "completed" {
+			continue
+		}
+		codes = append(codes, t.TaskCode)
+	}
+	if len(codes) == 0 {
+		response.Success(c, gin.H{"accepted": 0, "message": "没有待接受的任务"})
+		return
+	}
+	if err := taskClient().GrowthAcceptTasks(acc, codes); err != nil {
+		response.Fail(c, "报名失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{"accepted": len(codes), "codes": codes})
+}
+
+// lookupAccount 从路径参数取账号并校验存在。
+func lookupAccount(c *gin.Context) (*model.Account, bool) {
+	idRaw := strings.TrimSpace(c.Param("id"))
+	id, err := strconv.ParseUint(idRaw, 10, 64)
+	if err != nil || id == 0 {
+		response.Fail(c, "无效的账号 ID")
+		return nil, false
+	}
+	acc, err := model.GetAccountByID(uint(id))
+	if err != nil || acc == nil {
+		response.Fail(c, "账号不存在")
+		return nil, false
+	}
+	return acc, true
+}
+
+// pendingOf 汇总未领取任务的奖励总额。
+func pendingOf(tasks []service.GrowthTask) int64 {
+	var total int64
+	for _, t := range tasks {
+		if t.Claimed {
+			continue
+		}
+		total += t.Credit
+	}
+	return total
+}

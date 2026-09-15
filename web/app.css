@@ -104,3 +104,7 @@ body.modal-open { overflow: hidden; }
 .strength.weak { background: #3a1520; color: #fecaca; }
 .strength.good { background: #3a2f10; color: #fde68a; }
 .strength.strong { background: #103a2c; color: #86efac; }
+
+/* 任务中心：表格内的窄进度条（区别于 .bar-row 的宽版） */
+.tbar { height: 6px; border-radius: 999px; background: #0e1730; overflow: hidden; width: 110px; margin-bottom: 3px; }
+.tbar i { display: block; height: 100%; background: linear-gradient(90deg, #34d399, #67e8f9); }

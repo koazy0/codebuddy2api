@@ -18,6 +18,7 @@
 - **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
 - **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
 - **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
+- **积分任务中心**：一键完成成长中心的任务并自动领奖。任务是靠**行为事件**计分而非 UI 操作，所以实现走的是「报名 → 上报事件链 → 等计分 → 领奖」四阶段，全程纯 API、幂等，重复点不会重复加分。实测单个新账号可完成 15+ 个任务、到账约 1550 分 / 70 能量。
 - **官方登录入库**：`auth login` 走 `POST /v2/plugin/auth/state`，再轮询 `GET /v2/plugin/auth/token`；JSON 导入按 jwt / username upsert。
 - **刷新票据**：`POST /v2/plugin/auth/token/refresh`。默认每天 03:00 扫描，JWT 剩余不足 30 天就续；请求前也会预刷新。
 - **看门狗**：默认 300 秒一轮。健康检查、同步额度、连续失败 3 次进冷却，冷却到期自动重新启用。
@@ -234,6 +235,17 @@ curl -H "Authorization: Bearer sk-admin-your-key" -X POST http://127.0.0.1:8088/
 | GET | `/admin/stats/models` | 模型消耗排行 |
 | GET | `/admin/stats/accounts` | 账号消耗排行 |
 | POST | `/admin/watchdog` | 立刻跑一轮看门狗 |
+| GET | `/admin/accounts/:id/tasks` | 成长中心任务列表（进度 / 奖励 / 状态） |
+| POST | `/admin/accounts/:id/tasks/run` | 一键完成：报名 → 上报事件 → 等计分 → 自动领奖。body `{"codes":[...]}` 可只跑指定任务 |
+| POST | `/admin/accounts/:id/tasks/accept` | 批量报名全部未接受任务 |
+| POST | `/admin/accounts/:id/tasks/:code/claim` | 单独领取某任务奖励 |
+| GET | `/admin/tasks/catalog` | 可自动化任务清单 |
+
+### 积分任务说明
+
+任务进度由上游按**行为事件**异步聚合，不是同步返回的。所以「一键完成」的流程是：先批量报名（未报名时 `target` 恒为 0，上报不计数），再按依赖顺序上报各任务的事件链，等约 3 秒让计分落定，最后对达标任务自动领奖。全程幂等，重复执行不会重复加分。
+
+面板上账号行的「积分任务」按钮即入口。已知两项无法自动完成：`Expert_Philanthropy` 没有可用进度判据；`black_cat`（夜猫子）只在 23:00–08:00 窗口内计分。
 
 ## Docker
 
