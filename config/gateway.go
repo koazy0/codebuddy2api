@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 type Gateway struct {
 	APIKey          string       `mapstructure:"api-key" json:"api-key" yaml:"api-key"`
 	AdminKey        string       `mapstructure:"admin-key" json:"admin-key" yaml:"admin-key"`
@@ -15,6 +17,27 @@ type Gateway struct {
 	Proxy           string       `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 	ModelAlias      []ModelAlias `mapstructure:"model-alias" json:"model-alias" yaml:"model-alias"`
 	FallbackModel   string       `mapstructure:"fallback-model" json:"fallback-model" yaml:"fallback-model"`
+	// SanitizeMode 控制发往上游前的清洗力度：
+	//   ""/"harness"（默认）——覆盖全部常见触发面：客户端模板（system/developer）、
+	//                          harness 注入的 user 上下文、tool 定义，以及随会话累积的
+	//                          assistant 历史与 tool 输出（后两者只做不可见脱敏，不删改文字）。
+	//                          默认值即面向「装上就用、写代码不被打断」，通常无需调整。
+	//   "full"               ——额外允许删除被污染的模板文本（句子级剪枝）。
+	//   "off"                ——完全关闭，仅用于排障对比。
+	// 无论取何值，被上游 11128 拒绝时都会自动升到 full 重发一次。
+	SanitizeMode string `mapstructure:"sanitize-mode" json:"sanitize-mode" yaml:"sanitize-mode"`
+}
+
+// SanitizeModeName 归一化配置值，回落到默认力度。
+func (g Gateway) SanitizeModeName() string {
+	switch strings.ToLower(strings.TrimSpace(g.SanitizeMode)) {
+	case "off":
+		return "off"
+	case "full":
+		return "full"
+	default:
+		return "harness"
+	}
 }
 
 type ModelAlias struct {

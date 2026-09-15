@@ -298,10 +298,16 @@ func TestSanitizeCodexFingerprint(t *testing.T) {
 	if !strings.Contains(sys, "Codex CLI") || !strings.Contains(sys, "Keep secrets.") {
 		t.Fatalf("native Codex identity or remainder lost: %s", sys)
 	}
+	// developer 与 system 等价（都会被 normalizeUpstreamRole 映射成 system），
+	// 上游 WAF 不区分两者，所以品牌词同样要脱敏；但除品牌词外必须逐字节保留。
 	dev := msgs[1].(map[string]any)["content"].(string)
-	if dev != "Use Codex CLI with OpenAI." {
-		t.Fatalf("developer should stay intact: %s", dev)
+	if strings.Contains(dev, "OpenAI") {
+		t.Fatalf("developer still has raw brand term: %q", dev)
 	}
+	if strings.ReplaceAll(dev, "\u200b", "") != "Use Codex CLI with OpenAI." {
+		t.Fatalf("developer content changed beyond zero-width marks: %s", dev)
+	}
+	// user 是真实对话内容，一个字都不能动（含 Codex 注入的运行时上下文）。
 	user := msgs[2].(map[string]any)["content"].(string)
 	if user != "Codex CLI please" {
 		t.Fatalf("user content should stay intact: %s", user)

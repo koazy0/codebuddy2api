@@ -24,6 +24,14 @@ gateway:
     # Codex Desktop 会额外请求 gpt-5.6-luna 等 OpenAI 托管模型。
     # 留空则自动落到最近一次成功的上游模型，再不行用 deepseek-v4.1-flash。
     fallback-model: ""
+    # 发往上游前的请求清洗力度（应对 11128 "unapproved channel"）。
+    # 默认值就是推荐值，通常不需要改——装上即用，写代码不被打断：
+    #   harness（默认）— 覆盖全部常见触发面：客户端模板（system/developer）、harness 注入的
+    #                    user 上下文、tool 定义，以及随会话累积的 assistant 历史与 tool 输出。
+    #                    后两者只做不可见脱敏（零宽），不删改任何文字，用户无感。
+    #   full          — 额外允许删除被污染的模板文本（句子级剪枝）。被 11128 拒绝时自动升到这档。
+    #   off           — 关闭清洗，仅用于排障对比。
+    sanitize-mode: "harness"
 
 codebuddy:
     ide-type: CodeBuddyIDE

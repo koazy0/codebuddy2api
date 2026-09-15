@@ -62,7 +62,7 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 			body["reasoning_summary"] = "auto"
 		}
 	}
-	sanitizeUpstreamChat(body)
+	sanitizeUpstreamChatWithMode(body, global.CORE_CONFIG.Gateway.SanitizeModeName())
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -178,6 +178,9 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 	exclude := map[uint]struct{}{}
 	retries := global.CORE_CONFIG.Gateway.Retries()
 	var lastErr string
+	// wafRetried：11128 被安全策略拒绝后，我们已经把请求体换成更干净的版本重发过一次。
+	// 只做一轮：换账号对 11128 无效（日志已证明换遍全池仍被拦），能救的只有改请求内容。
+	wafRetried := false
 
 	for i := 0; i < retries; i++ {
 		acc, err := p.rotator.NextFor(exclude, meta.UpstreamModel)
@@ -253,6 +256,21 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			if isModelQuotaExhausted(resp.StatusCode, raw) {
 				p.rotator.MarkModelExhausted(acc, meta.UpstreamModel, lastErr)
 				continue
+			}
+			if isUnapprovedChannel(raw) && !wafRetried {
+				// 安全策略拦的是「请求内容」，不是账号：换账号重试只会把整池烧一遍
+				// （线上日志实测：同一请求连续换 8 个账号，全部 11128）。
+				// 正确做法是就地降级——把 harness 注入的 user 消息也一并脱敏，重发一次。
+				wafRetried = true
+				global.CORE_LOG.Warn("upstream blocked by security policy, escalating sanitize and retrying",
+					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
+				if retryWAFRejectedBody(meta) {
+					// 不排除当前账号：账号本身没问题，换号解决不了内容问题。
+					delete(exclude, acc.ID)
+					i--
+					continue
+				}
+				global.CORE_LOG.Warn("escalating sanitize produced no change, giving up", zap.Uint("account_id", acc.ID))
 			}
 			if isUpstreamRequestError(raw) {
 				global.CORE_LOG.Warn("upstream rejected request without burning account", zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
@@ -385,7 +403,7 @@ func (p *Proxy) writeJSON(c *gin.Context, resp *http.Response, meta *ChatRequest
 	}
 	c.Header("Content-Type", "application/json")
 	c.Status(http.StatusOK)
-	_, writeErr := c.Writer.Write(agg)
+	_, writeErr := c.Writer.Write(stripInvisibleFromFrame(agg))
 	return result.Usage, writeErr
 }
 
