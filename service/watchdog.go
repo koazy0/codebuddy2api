@@ -23,16 +23,32 @@ func NewWatchdog(client *UpstreamClient, refresher *Refresher) *Watchdog {
 	return &Watchdog{client: client, refresher: refresher}
 }
 
-func (w *Watchdog) RunOnce(ctx context.Context) {
+// WatchdogRound 一轮看门狗的统计结果。
+//
+// 存在的意义：调用方（面板 / 排程）需要知道这一轮到底做了什么。
+// 尤其 Skipped 与 Disabled：前者说明上一轮还没跑完、这轮被跳过，
+// 后者说明有账号刚被判死——只回一句「跑完了」会把这些信息全丢掉。
+type WatchdogRound struct {
+	// Skipped 为真表示本轮因上一轮未结束而未执行。
+	Skipped bool `json:"skipped,omitempty"`
+	Checked int  `json:"checked"`
+	// Recovered 续期成功 + 冷却到期恢复的账号数。
+	Recovered int `json:"recovered"`
+	// Disabled 本轮被判定异常的账号数。
+	Disabled int `json:"disabled"`
+}
+
+// RunOnce 跑一轮看门狗并返回统计。
+func (w *Watchdog) RunOnce(ctx context.Context) WatchdogRound {
 	if !w.running.CompareAndSwap(false, true) {
-		return
+		return WatchdogRound{Skipped: true}
 	}
 	defer w.running.Store(false)
 
 	list, err := model.ListAccounts()
 	if err != nil {
 		global.CORE_LOG.Error("watchdog list accounts failed", zap.Error(err))
-		return
+		return WatchdogRound{}
 	}
 
 	threshold := time.Duration(global.CORE_CONFIG.Refresh.Threshold()) * 24 * time.Hour
@@ -118,6 +134,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) {
 		zap.Int("recovered", recovered),
 		zap.Int("disabled", disabled),
 	)
+	return WatchdogRound{Checked: checked, Recovered: recovered, Disabled: disabled}
 }
 
 func (w *Watchdog) SyncAccountCredit(ctx context.Context, acc *model.Account) error {

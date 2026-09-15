@@ -515,8 +515,32 @@ $("runRefresh").onclick = () => withFlash(async () => {
   const data = await api("/admin/refresh", { method: "POST" });
   flash("扫描 " + data.scanned + "，刷新 " + data.refreshed + "，失败 " + data.failed, true);
 }, "");
-$("syncCredit").onclick = () => withFlash(() => api("/admin/sync-credit", { method: "POST" }), "已同步额度");
-$("runWatchdog").onclick = () => withFlash(() => api("/admin/watchdog", { method: "POST" }), "看门狗跑完");
+// 同步额度：返回 {ok, failed, total}，把统计如实显示出来。
+// 账号多的时候「有几个失败」才是关键信息，只弹「已同步」等于没说。
+$("syncCredit").onclick = () => withFlash(async () => {
+  // 全量同步要逐个账号请求上游，远超默认 15s。
+  const r = await api("/admin/sync-credit", { method: "POST", timeoutMs: 300000 });
+  const failed = Number(r && r.failed) || 0;
+  const ok = Number(r && r.ok) || 0;
+  const total = Number(r && r.total) || 0;
+  const detail = failed ? `同步完成：${ok}/${total} 成功，${failed} 个失败（详见账号列表的错误信息）`
+                        : `同步完成：${ok}/${total} 个账号额度已更新`;
+  flash(detail, !failed);
+}, "");
+// 看门狗：后端回 {round:{checked,recovered,disabled,skipped}, accounts:[...]}。
+// 三项统计都要看，尤其 disabled —— 那代表有账号刚被判死。
+$("runWatchdog").onclick = () => withFlash(async () => {
+  const r = await api("/admin/watchdog", { method: "POST", timeoutMs: 180000 });
+  const round = (r && r.round) || {};
+  if (round.skipped) {
+    flash("上一轮看门狗还在跑，本轮已跳过", false);
+    return;
+  }
+  const checked = Number(round.checked) || 0;
+  const recovered = Number(round.recovered) || 0;
+  const disabled = Number(round.disabled) || 0;
+  flash(`看门狗完成：检查 ${checked} 个账号，续期/解冻 ${recovered} 个，判定异常 ${disabled} 个`, disabled === 0);
+}, "");
 
 $("saveAccess").onclick = () => withFlash(async () => {
   const pwd = $("dashPassword").value;

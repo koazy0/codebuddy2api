@@ -64,8 +64,13 @@ func UpsertModel(c *gin.Context) {
 	response.Success(c, m)
 }
 
+// Health 跑一轮看门狗并返回本轮统计 + 账号快照。
+//
+// 返回形状从「账号数组」改为 {round, accounts}：面板需要知道这一轮
+// 做了什么（检查/恢复/判异常了多少），只拿到账号列表看不出这些。
+// accounts 一并带上，省掉调用方紧跟一次 /admin/accounts 的往返。
 func Health(c *gin.Context) {
-	service.DefaultWatchdog.RunOnce(c.Request.Context())
+	round := service.DefaultWatchdog.RunOnce(c.Request.Context())
 	accounts, err := model.ListAccounts()
 	if err != nil {
 		response.Fail(c, err.Error())
@@ -84,7 +89,7 @@ func Health(c *gin.Context) {
 			"cooldown_until":  acc.CooldownUntil,
 		})
 	}
-	response.Success(c, out)
+	response.Success(c, gin.H{"round": round, "accounts": out})
 }
 
 func RegisterRoutes(rg *gin.RouterGroup) {
