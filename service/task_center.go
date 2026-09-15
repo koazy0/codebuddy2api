@@ -79,6 +79,17 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 		Results:   make([]TaskRunResult, 0, len(taskRunners)),
 	}
 
+	// 前置校验：没有 userId 就不要往下跑。
+	//
+	// 行为事件必须带 userId，缺失时上游返回 200 但**静默丢弃**它，
+	// 任务进度一动不动。那种情况下整套流程会"全程成功、结果为零"，
+	// 是最难排查的失败形态。这里提前拦下并说清原因。
+	if acc.UID() == "" {
+		summary.Err = "该账号缺少 userId（JWT 里没有 sub，导入数据里也没有 uid），" +
+			"行为事件会被上游静默丢弃，任务无法计分。请重新导入带完整凭据的账号。"
+		return summary
+	}
+
 	before, err := c.GrowthListTasks(acc)
 	if err != nil {
 		summary.Err = "拉取任务列表失败: " + err.Error()

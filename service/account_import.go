@@ -16,6 +16,9 @@ type ImportedAccount struct {
 	RefreshToken  string
 	SessionCookie string
 	Remark        string
+	// UserID 是成长中心任务所需的 userId。导入 JSON 里常带（uid/userId），
+	// 直接落库就省掉运行时再从 JWT 解析一遍。
+	UserID string
 }
 
 func (a ImportedAccount) ToModel() *model.Account {
@@ -25,6 +28,7 @@ func (a ImportedAccount) ToModel() *model.Account {
 		RefreshToken:  a.RefreshToken,
 		SessionCookie: a.SessionCookie,
 		Remark:        a.Remark,
+		UserID:        a.UserID,
 		Status:        model.AccountStatusEnabled,
 		Weight:        1,
 	}
@@ -161,6 +165,7 @@ func extractOneAccount(v any) *ImportedAccount {
 		RefreshToken:  refresh,
 		SessionCookie: session,
 		Remark:        uid,
+		UserID:        normalizeImportedUID(uid),
 	}
 }
 
@@ -199,7 +204,37 @@ func mergeImported(dst, src ImportedAccount) ImportedAccount {
 	if dst.Remark == "" {
 		dst.Remark = src.Remark
 	}
+	if dst.UserID == "" {
+		dst.UserID = src.UserID
+	}
 	return dst
+}
+
+// normalizeImportedUID 只接受形似 userId 的值（UUID 形态），
+// 否则回空串交由运行时从 JWT 的 sub 解析。
+//
+// 原因：导入 JSON 里的 uid 字段语义不统一，实测既有真实 UUID，
+// 也有邮箱/手机号/昵称。把手机号当 userId 上报会被上游当作错误身份
+// 静默丢弃事件——那比"没有值"更糟，因为它看起来是成功的。
+func normalizeImportedUID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// UUID 形态：8-4-4-4-12 的十六进制。
+	if len(s) == 36 && s[8] == '-' && s[13] == '-' && s[18] == '-' && s[23] == '-' {
+		for i, r := range s {
+			if i == 8 || i == 13 || i == 18 || i == 23 {
+				continue
+			}
+			isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+			if !isHex {
+				return ""
+			}
+		}
+		return s
+	}
+	return ""
 }
 
 func dedupeImported(items []ImportedAccount) []ImportedAccount {

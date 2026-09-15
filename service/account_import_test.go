@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +98,44 @@ func TestParseImportedJSONArrayAndMissingToken(t *testing.T) {
 	}
 	if _, err := ParseImportedJSON([]byte(`{"accounts":[{"nickname":"no-token"}]}`)); err == nil {
 		t.Fatal("expected missing token error")
+	}
+}
+
+// TestNormalizeImportedUID 锁定一条容易踩的坑：导入 JSON 里的 uid 字段
+// 语义不统一，实测既有真实 UUID，也有手机号/邮箱。
+// 把手机号当 userId 上报会被上游当作错误身份**静默丢弃**事件——
+// 比没有值更糟，因为它看起来是成功的。所以只接受 UUID 形态。
+func TestNormalizeImportedUID(t *testing.T) {
+	good := "2993afbb-00b2-4552-99c5-1f1311ff83fc"
+	if got := normalizeImportedUID(good); got != good {
+		t.Fatalf("合法 UUID 应保留，实际 %q", got)
+	}
+	if got := normalizeImportedUID("  " + strings.ToUpper(good) + " "); got != strings.ToUpper(good) {
+		t.Fatalf("应 trim 并接受大写，实际 %q", got)
+	}
+	bad := []string{
+		"", "19930182680", "user@example.com", "Ana Renata",
+		"2993afbb-00b2-4552-99c5", "not-a-uuid",
+		"2993afbbx00b2-4552-99c5-1f1311ff83fc",
+	}
+	for _, v := range bad {
+		if got := normalizeImportedUID(v); got != "" {
+			t.Errorf("%q 不是 UUID，应回空串，实际 %q", v, got)
+		}
+	}
+}
+
+// TestImportedUIDFallsBackToJWT 落库的 UserID 缺失时，UID() 必须能从 JWT 兜底。
+func TestImportedUIDFallsBackToJWT(t *testing.T) {
+	token := "eyJhbGciOiJSUzI1NiJ9." +
+		"eyJzdWIiOiIyOTkzYWZiYi0wMGIyLTQ1NTItOTljNS0xZjEzMTFmZjgzZmMifQ.sig"
+	acc := ImportedAccount{Name: "n", JWT: token, UserID: ""}.ToModel()
+	if got := acc.UID(); got != "2993afbb-00b2-4552-99c5-1f1311ff83fc" {
+		t.Fatalf("应从 JWT sub 兜底，实际 %q", got)
+	}
+	// 落库值优先
+	acc2 := ImportedAccount{Name: "n", JWT: token, UserID: "explicit-uid"}.ToModel()
+	if got := acc2.UID(); got != "explicit-uid" {
+		t.Fatalf("落库 UserID 应优先，实际 %q", got)
 	}
 }

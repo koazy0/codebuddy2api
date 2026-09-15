@@ -267,3 +267,22 @@ func TestTaskLocksPerAccount(t *testing.T) {
 func timeAtHour(h int) time.Time {
 	return time.Date(2026, 9, 15, h, 30, 0, 0, time.Local)
 }
+
+// TestRunAccountTasksRequiresUID 锁定一条真实存在的失败形态：
+// 没有 userId 时上游对行为事件返回 200 但静默丢弃，任务进度纹丝不动。
+// 若不前置拦截，整套流程会「全程成功、结果为零」——最难排查的一类问题。
+func TestRunAccountTasksRequiresUID(t *testing.T) {
+	c := &UpstreamClient{}
+	// 无 JWT、无 UserID：UID 解析必然为空。
+	acc := &model.Account{Name: "no-uid"}
+	s := c.RunAccountTasks(acc, nil)
+	if s.Err == "" {
+		t.Fatal("缺 userId 时应提前失败并给出原因")
+	}
+	if !strings.Contains(s.Err, "userId") {
+		t.Fatalf("错误信息应点明 userId 问题，实际: %s", s.Err)
+	}
+	if len(s.Results) != 0 {
+		t.Fatalf("前置校验失败时不应执行任何任务，实际跑了 %d 项", len(s.Results))
+	}
+}
