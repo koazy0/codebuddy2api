@@ -357,3 +357,26 @@ func TestConcurrentRunReturnsBusy(t *testing.T) {
 		t.Fatal("第二个请求被阻塞了 —— 应立即可返回")
 	}
 }
+
+// TestFindTaskMatchesByCode 跳过判断依赖 findTask 正确匹配，
+// 匹配不上就会把已领取/未解锁的任务又跑一遍。
+func TestFindTaskMatchesByCode(t *testing.T) {
+	tasks := []GrowthTask{
+		{TaskCode: "chat_5", Claimed: true},
+		{TaskCode: "Expert_team_use_3", Locked: true, Credit: 100},
+	}
+	got := findTask(tasks, "Expert_team_use_3")
+	if got == nil {
+		t.Fatal("应按任务码找到（注意大小写不统一）")
+	}
+	if !got.Locked {
+		t.Fatal("应保留 Locked 标记，否则会被误跑")
+	}
+	if findTask(tasks, "nope") != nil {
+		t.Fatal("不存在的任务码应返回 nil")
+	}
+	// 大小写不敏感
+	if findTask(tasks, "EXPERT_TEAM_USE_3") == nil {
+		t.Fatal("应大小写不敏感")
+	}
+}

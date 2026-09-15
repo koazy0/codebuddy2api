@@ -45,7 +45,7 @@ func TaskList(c *gin.Context) {
 	})
 }
 
-// TaskCatalogList 返回可一键完成的任务清单（面板用它解释每个任务做什么）。
+// TaskCatalogList 返回可一键完成的任务清单（排障用：查哪些任务码可自动化）。
 func TaskCatalogList(c *gin.Context) {
 	response.Success(c, gin.H{"catalog": service.TaskCatalog()})
 }

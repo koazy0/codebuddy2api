@@ -119,12 +119,22 @@ func (c *UpstreamClient) RunAccountTasks(ctx context.Context, acc *model.Account
 			summary.Err = "任务已中止（客户端断开）"
 			break
 		}
-		// 已领取的任务直接跳过，避免无用调用。
-		if t := findTask(before, r.Code); t != nil && t.Claimed {
-			summary.Results = append(summary.Results, TaskRunResult{
-				Code: r.Code, Desc: r.Desc, Skipped: true, Message: "已领取，跳过",
-			})
-			continue
+		// 已领取或未解锁的任务直接跳过，避免无用调用。
+		// Locked 是上游给的「还不该做」标记（前置任务没完成等），
+		// 硬跑只会被拒，白费一次请求。
+		if t := findTask(before, r.Code); t != nil {
+			if t.Claimed {
+				summary.Results = append(summary.Results, TaskRunResult{
+					Code: r.Code, Desc: r.Desc, Skipped: true, Message: "已领取，跳过",
+				})
+				continue
+			}
+			if t.Locked {
+				summary.Results = append(summary.Results, TaskRunResult{
+					Code: r.Code, Desc: r.Desc, Skipped: true, Message: "任务未解锁，跳过",
+				})
+				continue
+			}
 		}
 		msg, err := r.run(ctx, c, acc)
 		res := TaskRunResult{Code: r.Code, Desc: r.Desc, Message: msg}
@@ -252,7 +262,8 @@ func accountDisplayName(acc *model.Account) string {
 	return fmt.Sprintf("#%d", acc.ID)
 }
 
-// TaskCatalog 返回可自动化任务清单（供面板展示有哪些任务能一键完成）。
+// TaskCatalog 返回可自动化任务清单。
+// 目前没有前端入口，保留作排障用：可一览哪些任务码能一键完成、哪些是尝试型。
 func TaskCatalog() []map[string]any {
 	out := make([]map[string]any, 0, len(taskRunners))
 	for _, r := range taskRunners {
