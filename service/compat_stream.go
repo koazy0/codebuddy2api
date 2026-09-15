@@ -816,7 +816,7 @@ func (p *Proxy) writeCompatJSON(c *gin.Context, resp *http.Response, meta *ChatR
 	}
 	c.Header("Content-Type", "application/json")
 	c.Status(http.StatusOK)
-	_, writeErr := c.Writer.Write(encoded)
+	_, writeErr := c.Writer.Write(stripInvisibleFromFrame(encoded))
 	return result.Usage, writeErr
 }
 
@@ -904,9 +904,15 @@ func (s *sseSink) Write(p []byte) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n, err := s.w.Write(p)
+	// 出站统一剥掉脱敏用的不可见标记，避免零宽随代码泄漏进用户工程。
+	clean := stripInvisibleFromFrame(p)
+	n, err := s.w.Write(clean)
 	if err == nil && s.flusher != nil {
 		s.flusher.Flush()
+	}
+	// 返回原始长度：调用方关心的是「它给的字节被接受了」，而不是清理后的长度。
+	if err == nil && n == len(clean) {
+		return len(p), nil
 	}
 	return n, err
 }
@@ -920,6 +926,37 @@ func (s *sseSink) Flush() {
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
+}
+
+// invisibleByteSeqs 是不可见标记的 UTF-8 字节序列，与 sanitize.go 的
+// invisibleMarks 一一对应（那里处理 string，这里处理出站字节）。
+var invisibleByteSeqs = [][]byte{
+	{0xe2, 0x80, 0x8b}, // U+200B 零宽空格（脱敏标记）
+	{0xe2, 0x80, 0x8c}, // U+200C 零宽非连接符
+	{0xe2, 0x80, 0x8d}, // U+200D 零宽连接符
+	{0xef, 0xbb, 0xbf}, // U+FEFF 零宽不换行空格 / BOM
+}
+
+// stripInvisibleFromFrame 在出站前剥掉不可见标记。
+//
+// 为什么必须做：入站脱敏靠往词里插零宽来打断上游的子串匹配，但模型读到的是
+// "s<ZWSP>andbox"。一旦它在回答或工具入参里复述这段文本，零宽就会随代码写进
+// 用户的源文件——肉眼完全看不出来，可 diff 会显示「有改动」、字符串比较会失败、
+// 正则匹配会漏。属于最难排查的一类问题，所以出站统一兜掉。
+//
+// 字节级替换是安全的：零宽总位于 JSON 字符串内容之内，而 SSE 帧是整帧写入的，
+// 不存在 3 字节序列被切到两帧的情况。
+func stripInvisibleFromFrame(p []byte) []byte {
+	if len(p) == 0 {
+		return p
+	}
+	out := p
+	for _, seq := range invisibleByteSeqs {
+		if bytes.Contains(out, seq) {
+			out = bytes.ReplaceAll(out, seq, nil)
+		}
+	}
+	return out
 }
 
 // sseHeartbeatFrame 必须是完整 SSE 事件，不能用注释帧 ": ping"。

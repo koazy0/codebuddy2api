@@ -14,7 +14,7 @@
 
 单二进制 Go 网关，不做用户系统、不做计费面板。核心是把 CodeBuddy 登录态转成标准 API，并把账号、票据、额度自己养起来。
 
-- **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：只改写系统提示开头那段会被 WAF（`11128`）命中的自我介绍，其余 Codex 身份和工作方式原样透传；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时不把账号打进冷却。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，体感仍是原生 Codex。
+- **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：清洗掉会触发 WAF（`11128`）的 harness 文本（system/developer 品牌指纹、harness 注入的 user 上下文、tool 描述，`full` 档再加 assistant 历史与 tool 输出），用户真实提问与 Codex 身份、工作方式原样透传；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时把请求清得更干净重发一次，而不是换号或冷却账号。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，体感仍是原生 Codex。
 - **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
 - **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
 - **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
@@ -107,9 +107,15 @@ curl http://127.0.0.1:8088/v1/messages \
 
 Codex 走 `wire_api = "responses"`。网关会把请求收成上游 `/v2/chat/completions`，并专门处理 Codex 才会带的结构：
 
-- 只改写系统提示开头那段会被上游 WAF（`11128`）命中的 Codex CLI 自我介绍；其余身份说明、工作方式和用户原文都原样透传。
+- 出站前做请求清洗，压掉会触发上游 WAF（`11128`）的 harness 文本。**默认配置即最优，装上就能用，写代码不被打断**。清洗只改客户端模板，**用户真实提问逐字节保留**；`assistant` / `tool` 这类对话记录只做不可见脱敏（零宽），绝不删改文字。力度由 `gateway.sanitize-mode` 控制：
+  - `harness`（默认）— 覆盖全部常见触发面：system/developer 文本的品牌指纹与合规词、harness 注入的 user 上下文、tool 定义的 `description`，以及随会话累积的 assistant 历史与 tool 输出。后两者正是长会话「跑一会儿才断」的成因，放在默认档处理才不会让你感知到中途失败。
+  - `full` — 额外允许删除被污染的模板文本（句子级剪枝）。被 11128 拒绝时自动升到这一档。
+  - `off` — 关闭清洗，仅用于排障对比。
+- 出站统一剥离零宽标记：脱敏用的不可见字符绝不会随响应流回客户端，避免被写进你的源文件（肉眼看不见，但 diff 会显示有改动、字符串比较会失败）。
+- 被 `11128` 拒绝时自动升到 `full` 档重发一次，且**不排除当前账号**——拦的是请求内容不是账号，换号只会把整池烧一遍。若该趟清无可清则直接返回错误，不做无意义的循环。
+- tool 定义的 `name` / `enum` / `default` / `parameters` 属功能字段，任何档位都不改写；apply_patch 的 `*** Begin Patch` 格式说明也始终保留，避免把「请求被拒」换成「工具调用崩掉」。
 - `namespace` 工具展成 `multi_agent_v1__spawn_agent` 这类 function；`custom` 工具（如 `exec`、`apply_patch`）收成带 `cmd` / `input` 的 function。只丢 `web_search` 这类上游没有的类型。
-- 上游若仍返回 `11128`，只记日志，不冷却账号。
+- 上游 `11128` / `11102` 只记日志，不冷却账号。
 
 `~/.codex/config.toml` 示例：
 
