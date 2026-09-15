@@ -74,8 +74,8 @@ type Account struct {
 	CreditPackages      string     `gorm:"type:text" json:"credit_packages"`
 	Remark              string     `gorm:"size:500" json:"remark"`
 	// UserID 是成长中心任务用的 userId（= JWT sub / /v2/plugin/accounts 的 uid）。
-	// 行为事件上报缺了它会被上游静默丢弃（返回 200 但不计进度），
-	// 所以首次用到时由 service 层从 JWT 解析并回填。
+	// 行为事件上报缺了它会被上游静默丢弃（返回 200 但不计进度）。
+	// 导入路径会直接落库；未落库的账号由 UID() 从 JWT 实时解析。
 	UserID string `gorm:"size:64;index" json:"user_id"`
 }
 
