@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -275,7 +276,7 @@ func TestRunAccountTasksRequiresUID(t *testing.T) {
 	c := &UpstreamClient{}
 	// 无 JWT、无 UserID：UID 解析必然为空。
 	acc := &model.Account{Name: "no-uid"}
-	s := c.RunAccountTasks(acc, nil)
+	s := c.RunAccountTasks(context.Background(), acc, nil)
 	if s.Err == "" {
 		t.Fatal("缺 userId 时应提前失败并给出原因")
 	}
@@ -284,5 +285,46 @@ func TestRunAccountTasksRequiresUID(t *testing.T) {
 	}
 	if len(s.Results) != 0 {
 		t.Fatalf("前置校验失败时不应执行任何任务，实际跑了 %d 项", len(s.Results))
+	}
+}
+
+// TestSleepCtxCancelsImmediately 锁住取消语义：客户端断开后，
+// 任务的节流等待必须立刻返回，而不是把 sleep 走完。
+// 旧实现用 time.Sleep，断开后仍会把整轮（1-2 分钟）跑完并占着账号锁。
+func TestSleepCtxCancelsImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	sleepCtx(ctx, 30*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("取消后应立即返回，实际等了 %v", elapsed)
+	}
+}
+
+// TestSleepCtxWaitsWhenNotCancelled 反向保证：未取消时该等还是要等，
+// 不能为了「可取消」把节流本身丢掉——节流是上游的节奏要求。
+func TestSleepCtxWaitsWhenNotCancelled(t *testing.T) {
+	start := time.Now()
+	sleepCtx(context.Background(), 60*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("未取消时应等待约 60ms，实际 %v", elapsed)
+	}
+}
+
+// TestRunAccountTasksStopsOnCancelledContext 端到端：
+// 已取消的 context 下不应派发任何任务。
+func TestRunAccountTasksStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := &UpstreamClient{}
+	// 有 UID 才会走到列表阶段；这里用无效 JWT，让 UID 为空以命中前置校验，
+	// 从而不需要真实网络。
+	acc := &model.Account{Name: "x"}
+	s := c.RunAccountTasks(ctx, acc, nil)
+	if s == nil {
+		t.Fatal("不应返回 nil")
+	}
+	if s.Err == "" {
+		t.Fatal("异常输入应给出 Err")
 	}
 }

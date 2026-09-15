@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ import (
 //
 // 上游返回 SSE，这里只读响应头就够（ID 在头里），但 body 必须读干——
 // 不读完会残留连接，影响后续请求。
-func (c *UpstreamClient) realChat(acc *model.Account, modelID, prompt string) (conversationID, requestID string, err error) {
+func (c *UpstreamClient) realChat(ctx context.Context, acc *model.Account, modelID, prompt string) (conversationID, requestID string, err error) {
 	conversationID = fmt.Sprintf("cbgw-conv-%d", time.Now().UnixNano())
 	body := map[string]any{
 		"model": modelID,
@@ -41,7 +42,7 @@ func (c *UpstreamClient) realChat(acc *model.Account, modelID, prompt string) (c
 	if err != nil {
 		return "", "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, growthBase()+"/v2/chat/completions", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, growthBase()+"/v2/chat/completions", bytes.NewReader(raw))
 	if err != nil {
 		return "", "", err
 	}
@@ -79,12 +80,12 @@ func (c *UpstreamClient) realChat(acc *model.Account, modelID, prompt string) (c
 }
 
 // buddyAgreement 同意 Buddy 用户协议（幂等）。
-func (c *UpstreamClient) buddyAgreement(acc *model.Account) error {
+func (c *UpstreamClient) buddyAgreement(ctx context.Context, acc *model.Account) error {
 	raw, err := json.Marshal(map[string]any{"agreed": true})
 	if err != nil {
 		return err
 	}
-	req, err := newJSONPost(growthBase()+"/v2/buddy/agreement", raw)
+	req, err := newJSONPost(ctx, growthBase()+"/v2/buddy/agreement", raw)
 	if err != nil {
 		return err
 	}
@@ -93,8 +94,8 @@ func (c *UpstreamClient) buddyAgreement(acc *model.Account) error {
 }
 
 // buddyFirst 领取第一只 Buddy（+300 分）。
-func (c *UpstreamClient) buddyFirst(acc *model.Account) error {
-	req, err := newJSONPost(growthBase()+"/v2/buddy/first", []byte("{}"))
+func (c *UpstreamClient) buddyFirst(ctx context.Context, acc *model.Account) error {
+	req, err := newJSONPost(ctx, growthBase()+"/v2/buddy/first", []byte("{}"))
 	if err != nil {
 		return err
 	}

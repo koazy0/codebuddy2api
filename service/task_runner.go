@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ type taskRunner struct {
 	Desc string
 	// Attempt 标记「尝试型」：上游未证实可完全脚本化，跑了可能不点亮。
 	Attempt bool
-	run     func(c *UpstreamClient, acc *model.Account) (string, error)
+	run     func(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error)
 }
 
 // reportGap 两次事件上报之间的最小间隔。
@@ -76,8 +77,8 @@ func runnerFor(code string) *taskRunner {
 // ---------------------------------------------------------------------------
 
 // runChat5 上报 5 条对话活跃事件（按当前进度补足差额）。
-func runChat5(c *UpstreamClient, acc *model.Account) (string, error) {
-	t, err := taskByCode(c, acc, "chat_5")
+func runChat5(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	t, err := taskByCode(ctx, c, acc, "chat_5")
 	if err != nil {
 		return "", err
 	}
@@ -94,45 +95,45 @@ func runChat5(c *UpstreamClient, acc *model.Account) (string, error) {
 	}
 	for i := int64(0); i < need; i++ {
 		cid := fmt.Sprintf("cbgw-chat5-%d-%d", time.Now().UnixMilli(), i)
-		if err := c.ReportChatActivity(acc, cid, "", ""); err != nil {
+		if err := c.ReportChatActivity(ctx, acc, cid, "", ""); err != nil {
 			return fmt.Sprintf("上报第 %d/%d 条失败: %v", i+1, need, err), nil
 		}
 		if i < need-1 {
-			time.Sleep(reportGap)
+			sleepCtx(ctx, reportGap)
 		}
 	}
 	return fmt.Sprintf("已补报 %d 条对话事件", need), nil
 }
 
 // runFirstBuddy 领养首只 Buddy：先上报活跃（解锁前置）→ 同意协议 → 领养。
-func runFirstBuddy(c *UpstreamClient, acc *model.Account) (string, error) {
-	if err := c.ReportChatActivity(acc, fmt.Sprintf("cbgw-adopt-%d", time.Now().UnixMilli()), "", ""); err != nil {
+func runFirstBuddy(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	if err := c.ReportChatActivity(ctx, acc, fmt.Sprintf("cbgw-adopt-%d", time.Now().UnixMilli()), "", ""); err != nil {
 		return "", fmt.Errorf("前置上报: %w", err)
 	}
-	time.Sleep(reportGap)
-	if err := c.buddyAgreement(acc); err != nil {
+	sleepCtx(ctx, reportGap)
+	if err := c.buddyAgreement(ctx, acc); err != nil {
 		return "", fmt.Errorf("同意协议: %w", err)
 	}
-	if err := c.buddyFirst(acc); err != nil {
+	if err := c.buddyFirst(ctx, acc); err != nil {
 		return fmt.Sprintf("前置已上报，但领养未成功（可能需当日活跃）：%v", err), nil
 	}
 	return "已领取 Buddy", nil
 }
 
 // runModelChat 完成指定模型的真实对话并对齐上报。
-func runModelChat(c *UpstreamClient, acc *model.Account) (string, error) {
+func runModelChat(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	const code, modelID, modelName = "Model_chat_GLM5.2", "glm-5.2", "GLM-5.2"
 	// accept 失败不阻塞：行为事件才是进度的唯一判据。
-	if err := c.GrowthAcceptTasks(acc, []string{code}); err != nil {
+	if err := c.GrowthAcceptTasks(ctx, acc, []string{code}); err != nil {
 		global.CORE_LOG.Warn("task accept failed", zap.String("code", code), zap.Error(err))
 	}
-	time.Sleep(reportGap)
-	conv, reqID, err := c.realChat(acc, modelID, "hi，请回复一句话")
+	sleepCtx(ctx, reportGap)
+	conv, reqID, err := c.realChat(ctx, acc, modelID, "hi，请回复一句话")
 	if err != nil {
 		return "", fmt.Errorf("对话请求: %w", err)
 	}
-	time.Sleep(reportGap)
-	if err := c.ReportChatActivity(acc, conv, modelID, modelName); err != nil {
+	sleepCtx(ctx, reportGap)
+	if err := c.ReportChatActivity(ctx, acc, conv, modelID, modelName); err != nil {
 		return "对话已完成，但进度上报失败：" + err.Error(), nil
 	}
 	_ = reqID
@@ -140,36 +141,36 @@ func runModelChat(c *UpstreamClient, acc *model.Account) (string, error) {
 }
 
 // runRichMeowChat 桌面端对话完整事件链（RichMeow_Chat 判据）。
-func runRichMeowChat(c *UpstreamClient, acc *model.Account) (string, error) {
+func runRichMeowChat(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	conv, req, msg := newEventIDs("cbgw-rm")
 	events := desktopChatSequence(conv, req, msg, "fast-model", "fast-model")
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", err
 	}
 	return "已上报桌面端完整对话事件链", nil
 }
 
 // runBuddyApp Buddy 应用进入事件链（同时覆盖 Buddy_App 与 Buddy_App_QQ）。
-func runBuddyApp(c *UpstreamClient, acc *model.Account) (string, error) {
+func runBuddyApp(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	events := desktopBuddyAppSequence("cb_y5Dy46tPQGGWtueMxXbe", "企鹅教师助手")
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", err
 	}
 	return "已上报 Buddy 应用进入事件链", nil
 }
 
 // runAutomationCreate 自动化任务创建事件。
-func runAutomationCreate(c *UpstreamClient, acc *model.Account) (string, error) {
-	if err := c.reportDesktopEvents(acc, desktopAutomationCreateEvent("cbgw 自动化")); err != nil {
+func runAutomationCreate(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	if err := c.reportDesktopEvents(ctx, acc, desktopAutomationCreateEvent("cbgw 自动化")); err != nil {
 		return "", err
 	}
 	return "已上报自动化任务创建事件", nil
 }
 
 // runLibraryRead 资料库介绍阅读事件（Web 域）。
-func runLibraryRead(c *UpstreamClient, acc *model.Account) (string, error) {
+func runLibraryRead(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	const docURL = "https://www.codebuddy.cn/space/d/intro"
-	if err := c.reportWebEvent(acc, "web_element_click", docURL,
+	if err := c.reportWebEvent(ctx, acc, "web_element_click", docURL,
 		"library_doc_intro_click", "资料库介绍"); err != nil {
 		return "", err
 	}
@@ -177,7 +178,7 @@ func runLibraryRead(c *UpstreamClient, acc *model.Account) (string, error) {
 }
 
 // runTemplateUse 使用模板创建任务 ×5。
-func runTemplateUse(c *UpstreamClient, acc *model.Account) (string, error) {
+func runTemplateUse(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	templates := [][2]string{
 		{"1", "深度研究"}, {"2", "周报生成"}, {"3", "竞品分析"},
 		{"4", "活动策划"}, {"5", "代码评审"},
@@ -185,29 +186,29 @@ func runTemplateUse(c *UpstreamClient, acc *model.Account) (string, error) {
 	for i, tp := range templates {
 		conv, req, _ := newEventIDs(fmt.Sprintf("cbgw-tpl%d", i))
 		events := desktopTemplateUseSequence(conv, req, tp[0], tp[1])
-		if err := c.reportDesktopEvents(acc, events...); err != nil {
+		if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 			return fmt.Sprintf("第 %d 组模板事件上报失败: %v", i+1, err), nil
 		}
-		time.Sleep(300 * time.Millisecond)
+		sleepCtx(ctx, 300*time.Millisecond)
 	}
 	return "已上报 template_used ×5", nil
 }
 
 // runPlaybookPrompt 灵感案例发送 Prompt。
-func runPlaybookPrompt(c *UpstreamClient, acc *model.Account) (string, error) {
+func runPlaybookPrompt(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	conv, req, _ := newEventIDs("cbgw-pb")
 	events := desktopPlaybookPromptSequence(conv, req, "pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", err
 	}
 	return "已上报灵感案例 Prompt 发送事件", nil
 }
 
 // runCreateCanvas 设计创意模式创建画布。
-func runCreateCanvas(c *UpstreamClient, acc *model.Account) (string, error) {
+func runCreateCanvas(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	conv, req, _ := newEventIDs("cbgw-canvas")
 	events := desktopDesignCanvasSequence(conv, req)
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", err
 	}
 	return "已上报设计画布创建事件组", nil
@@ -219,13 +220,13 @@ func runCreateCanvas(c *UpstreamClient, acc *model.Account) (string, error) {
 // （POST /v2/user-asset/appearance/set 返回 200），但判据似乎要求客户端
 // 在切主题后真实活跃一段时间，纯 API 调用未必点亮。保留实现是为了让
 // 账号侧配置就位（真客户端随后使用时即可满足条件）。
-func runAppearance(c *UpstreamClient, acc *model.Account) (string, error) {
+func runAppearance(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	const themeKey = "theme-tkmw7j" // 和平精英激战金秋（Hp_Appearance 判据主题）
-	if err := c.setAppearanceTheme(acc, themeKey); err != nil {
+	if err := c.setAppearanceTheme(ctx, acc, themeKey); err != nil {
 		return "", fmt.Errorf("设置主题: %w", err)
 	}
-	time.Sleep(2 * time.Second)
-	if err := c.reportDesktopEvents(acc, desktopEvent{
+	sleepCtx(ctx, 2*time.Second)
+	if err := c.reportDesktopEvents(ctx, acc, desktopEvent{
 		"eventCode": "appearance_skin_apply", "action": "apply", "source": "settings_close",
 		"id": themeKey, "vipLevel": 0, "series": "", "type": "unknown",
 	}); err != nil {
@@ -235,8 +236,8 @@ func runAppearance(c *UpstreamClient, acc *model.Account) (string, error) {
 }
 
 // runSkillFresh 真实对话 + skill_info 技能加载事件。
-func runSkillFresh(c *UpstreamClient, acc *model.Account) (string, error) {
-	conv, req, err := c.realChat(acc, "fast-model", "1+1等于几？直接回答。")
+func runSkillFresh(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	conv, req, err := c.realChat(ctx, acc, "fast-model", "1+1等于几？直接回答。")
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -259,25 +260,25 @@ func runSkillFresh(c *UpstreamClient, acc *model.Account) (string, error) {
 		"requestModelId": "fast-model", "requestModelName": "fast-model",
 		"traceId": req,
 	})
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", fmt.Errorf("skill_info 事件: %w", err)
 	}
 	return "已上报真实对话 + 技能加载事件", nil
 }
 
 // runExpertUse 使用 5 位平台专家。
-func runExpertUse(c *UpstreamClient, acc *model.Account) (string, error) {
-	return runExpertBatch(c, acc, "agent", 5)
+func runExpertUse(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	return runExpertBatch(ctx, c, acc, "agent", 5)
 }
 
 // runExpertTeamUse 使用 3 个专家团。
-func runExpertTeamUse(c *UpstreamClient, acc *model.Account) (string, error) {
-	return runExpertBatch(c, acc, "team", 3)
+func runExpertTeamUse(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
+	return runExpertBatch(ctx, c, acc, "team", 3)
 }
 
 // runExpertBatch 专家召唤 + 使用的公共实现（失败逐个继续）。
-func runExpertBatch(c *UpstreamClient, acc *model.Account, expertType string, count int) (string, error) {
-	experts, err := c.marketExpertList(acc, expertType)
+func runExpertBatch(ctx context.Context, c *UpstreamClient, acc *model.Account, expertType string, count int) (string, error) {
+	experts, err := c.marketExpertList(ctx, acc, expertType)
 	if err != nil {
 		return "", fmt.Errorf("拉取专家列表: %w", err)
 	}
@@ -289,10 +290,10 @@ func runExpertBatch(c *UpstreamClient, acc *model.Account, expertType string, co
 		if ok >= count {
 			break
 		}
-		if err := c.reportDesktopEvents(acc, expertSummonSequence(e)...); err != nil {
+		if err := c.reportDesktopEvents(ctx, acc, expertSummonSequence(e)...); err != nil {
 			continue
 		}
-		conv, req, err := c.realChat(acc, "fast-model", "1+1等于几？直接回答。")
+		conv, req, err := c.realChat(ctx, acc, "fast-model", "1+1等于几？直接回答。")
 		if err != nil {
 			continue
 		}
@@ -300,25 +301,25 @@ func runExpertBatch(c *UpstreamClient, acc *model.Account, expertType string, co
 			desktopChatSequence(conv, req, "msg-"+tail(req, 8), "fast-model", "fast-model"),
 			expertActualUseEvent(e, conv, req, "craft"),
 		)
-		if err := c.reportDesktopEvents(acc, events...); err != nil {
+		if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 			continue
 		}
 		ok++
 		if i < len(experts)-1 {
-			time.Sleep(expertSummonGap)
+			sleepCtx(ctx, expertSummonGap)
 		}
 	}
 	return fmt.Sprintf("已对 %d 位专家完成召唤+使用链（类型 %s）", ok, expertType), nil
 }
 
 // runLighthouse 轻量云专家（mode 必须是 LOCAL，与 expert_5 的 craft 不同）。
-func runLighthouse(c *UpstreamClient, acc *model.Account) (string, error) {
+func runLighthouse(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	const lhID = "ex_2cvvUZQhDyeJ"
 	lh := marketExpert{
 		ExpertID: lhID, ExpertType: "agent",
 		DisplayNameZH: "腾讯轻量云专家", ProfessionZH: "腾讯轻量云专家", Version: "1.0.2",
 	}
-	if experts, err := c.marketExpertList(acc, "agent"); err == nil {
+	if experts, err := c.marketExpertList(ctx, acc, "agent"); err == nil {
 		for _, e := range experts {
 			if e.ExpertID == lhID {
 				lh = e
@@ -326,11 +327,11 @@ func runLighthouse(c *UpstreamClient, acc *model.Account) (string, error) {
 			}
 		}
 	}
-	if err := c.reportDesktopEvents(acc, expertSummonSequence(lh)...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, expertSummonSequence(lh)...); err != nil {
 		return "", err
 	}
-	time.Sleep(reportGap)
-	conv, req, err := c.realChat(acc, "fast-model", "1+1等于几？直接回答。")
+	sleepCtx(ctx, reportGap)
+	conv, req, err := c.realChat(ctx, acc, "fast-model", "1+1等于几？直接回答。")
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -338,18 +339,18 @@ func runLighthouse(c *UpstreamClient, acc *model.Account) (string, error) {
 		desktopChatSequence(conv, req, "msg-"+tail(req, 8), "fast-model", "fast-model"),
 		expertActualUseEvent(lh, conv, req, "LOCAL"),
 	)
-	if err := c.reportDesktopEvents(acc, events...); err != nil {
+	if err := c.reportDesktopEvents(ctx, acc, events...); err != nil {
 		return "", err
 	}
 	return "已对轻量云专家完成召唤+使用链", nil
 }
 
 // runBlackCat 夜猫子：仅在 23:00–08:00 窗口内计数。
-func runBlackCat(c *UpstreamClient, acc *model.Account) (string, error) {
+func runBlackCat(ctx context.Context, c *UpstreamClient, acc *model.Account) (string, error) {
 	if !inNightWindow(time.Now()) {
 		return "当前不在 23:00–08:00 计数窗口，稍后重试", nil
 	}
-	t, err := taskByCode(c, acc, "black_cat")
+	t, err := taskByCode(ctx, c, acc, "black_cat")
 	if err != nil {
 		return "", err
 	}
@@ -361,15 +362,15 @@ func runBlackCat(c *UpstreamClient, acc *model.Account) (string, error) {
 		return "进度已达标，无需补足", nil
 	}
 	for i := int64(0); i < need; i++ {
-		conv, _, err := c.realChat(acc, "glm-5.2", "hi")
+		conv, _, err := c.realChat(ctx, acc, "glm-5.2", "hi")
 		if err != nil {
 			return fmt.Sprintf("完成 %d/%d 次后中断: %v", i, need, err), nil
 		}
-		if err := c.ReportChatActivity(acc, conv, "glm-5.2", "GLM-5.2"); err != nil {
+		if err := c.ReportChatActivity(ctx, acc, conv, "glm-5.2", "GLM-5.2"); err != nil {
 			return fmt.Sprintf("完成 %d/%d 次后上报失败: %v", i, need, err), nil
 		}
 		if i < need-1 {
-			time.Sleep(reportGap)
+			sleepCtx(ctx, reportGap)
 		}
 	}
 	return fmt.Sprintf("已完成 %d 次夜间对话并上报", need), nil
@@ -382,8 +383,8 @@ func inNightWindow(t time.Time) bool {
 }
 
 // taskByCode 查单个任务当前状态，任务不存在时返回 (nil, nil)。
-func taskByCode(c *UpstreamClient, acc *model.Account, code string) (*GrowthTask, error) {
-	tasks, err := c.GrowthListTasks(acc)
+func taskByCode(ctx context.Context, c *UpstreamClient, acc *model.Account, code string) (*GrowthTask, error) {
+	tasks, err := c.GrowthListTasks(ctx, acc)
 	if err != nil {
 		return nil, err
 	}
@@ -401,4 +402,19 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// sleepCtx 是可取消的等待。任务链路里有大量节流间隔（合计可达 1-2 分钟），
+// 用 time.Sleep 会让客户端断开后仍把整轮跑完，并一直占着账号锁——
+// 表现就是「点了没反应，再点说在忙」。改成监听 ctx，断开即停。
+func sleepCtx(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }

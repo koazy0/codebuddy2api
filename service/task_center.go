@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -68,7 +69,7 @@ func lockForAccount(id uint) *sync.Mutex {
 // RunAccountTasks 对单个账号执行完整的任务中心流程。
 //
 // only 非空时只跑指定任务码（用于面板里点单项）；为空则跑全部可自动化任务。
-func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *TaskSummary {
+func (c *UpstreamClient) RunAccountTasks(ctx context.Context, acc *model.Account, only []string) *TaskSummary {
 	mu := lockForAccount(acc.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -90,7 +91,7 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 		return summary
 	}
 
-	before, err := c.GrowthListTasks(acc)
+	before, err := c.GrowthListTasks(ctx, acc)
 	if err != nil {
 		summary.Err = "拉取任务列表失败: " + err.Error()
 		return summary
@@ -98,13 +99,20 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 	summary.Before = pendingCredit(before)
 
 	// 阶段 1：批量报名。
-	if err := c.acceptPending(acc, before); err != nil {
+	if err := c.acceptPending(ctx, acc, before); err != nil {
 		global.CORE_LOG.Warn("task accept phase failed", zap.Uint("account_id", acc.ID), zap.Error(err))
 	}
 
 	// 阶段 2：按序执行各任务的动作。
 	runners := selectRunners(only)
 	for _, r := range runners {
+		// 客户端已断开就停止派发后续任务。
+		// 底层请求与节流等待都监听 ctx，但循环本身要主动查一次——
+		// 否则一个任务跑完后仍会继续派发下一个，把整轮空跑完。
+		if err := ctx.Err(); err != nil {
+			summary.Err = "任务已中止（客户端断开）"
+			break
+		}
 		// 已领取的任务直接跳过，避免无用调用。
 		if t := findTask(before, r.Code); t != nil && t.Claimed {
 			summary.Results = append(summary.Results, TaskRunResult{
@@ -112,7 +120,7 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 			})
 			continue
 		}
-		msg, err := r.run(c, acc)
+		msg, err := r.run(ctx, c, acc)
 		res := TaskRunResult{Code: r.Code, Desc: r.Desc, Message: msg}
 		if err != nil {
 			res.Error = err.Error()
@@ -123,10 +131,14 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 	}
 
 	// 阶段 3：等计分落定。
-	time.Sleep(settleWait)
+	sleepCtx(ctx, settleWait)
+	if err := ctx.Err(); err != nil {
+		summary.Err = "任务已中止（客户端断开）"
+		return summary
+	}
 
 	// 阶段 4：领取已达标的任务。
-	after, err := c.GrowthListTasks(acc)
+	after, err := c.GrowthListTasks(ctx, acc)
 	if err != nil {
 		summary.Err = "领取阶段拉取任务列表失败: " + err.Error()
 		return summary
@@ -139,7 +151,7 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 		if len(only) > 0 && !containsFold(only, t.TaskCode) {
 			continue
 		}
-		credit, energy, err := c.GrowthClaimReward(acc, t.TaskCode)
+		credit, energy, err := c.GrowthClaimReward(ctx, acc, t.TaskCode)
 		if err != nil {
 			global.CORE_LOG.Warn("claim failed",
 				zap.Uint("account_id", acc.ID), zap.String("code", t.TaskCode), zap.Error(err))
@@ -150,18 +162,18 @@ func (c *UpstreamClient) RunAccountTasks(acc *model.Account, only []string) *Tas
 			summary.CreditGained += credit
 			summary.EnergyGained += energy
 		}
-		time.Sleep(400 * time.Millisecond)
+		sleepCtx(ctx, 400*time.Millisecond)
 	}
 
 	// 收尾：再查一次，给出剩余未领取奖励。
-	if final, err := c.GrowthListTasks(acc); err == nil {
+	if final, err := c.GrowthListTasks(ctx, acc); err == nil {
 		summary.After = pendingCredit(final)
 	}
 	return summary
 }
 
 // acceptPending 批量报名尚未接受的任务。
-func (c *UpstreamClient) acceptPending(acc *model.Account, tasks []GrowthTask) error {
+func (c *UpstreamClient) acceptPending(ctx context.Context, acc *model.Account, tasks []GrowthTask) error {
 	var codes []string
 	for _, t := range tasks {
 		if t.Claimed || t.Locked {
@@ -175,7 +187,7 @@ func (c *UpstreamClient) acceptPending(acc *model.Account, tasks []GrowthTask) e
 	if len(codes) == 0 {
 		return nil
 	}
-	return c.GrowthAcceptTasks(acc, codes)
+	return c.GrowthAcceptTasks(ctx, acc, codes)
 }
 
 // selectRunners 按 only 过滤执行器；only 为空时返回全部（顺序即依赖顺序）。

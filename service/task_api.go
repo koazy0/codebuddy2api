@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,7 +85,7 @@ func webBase() string {
 }
 
 // growthDo 发一次 growth 域请求并解出 data 段。
-func (c *UpstreamClient) growthDo(acc *model.Account, method, url string, body any) (json.RawMessage, error) {
+func (c *UpstreamClient) growthDo(ctx context.Context, acc *model.Account, method, url string, body any) (json.RawMessage, error) {
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -93,7 +94,7 @@ func (c *UpstreamClient) growthDo(acc *model.Account, method, url string, body a
 		}
 		rdr = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, url, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +105,8 @@ func (c *UpstreamClient) growthDo(acc *model.Account, method, url string, body a
 // GrowthListTasks 拉取全量任务列表。
 //
 // progress 字段有两种形状（对象 {current,target} 或平铺），两种都解。
-func (c *UpstreamClient) GrowthListTasks(acc *model.Account) ([]GrowthTask, error) {
-	data, err := c.growthDo(acc, http.MethodGet, growthBase()+growthTasksPath, nil)
+func (c *UpstreamClient) GrowthListTasks(ctx context.Context, acc *model.Account) ([]GrowthTask, error) {
+	data, err := c.growthDo(ctx, acc, http.MethodGet, growthBase()+growthTasksPath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -161,11 +162,11 @@ func (c *UpstreamClient) GrowthListTasks(acc *model.Account) ([]GrowthTask, erro
 }
 
 // GrowthAcceptTasks 批量报名。幂等：已报名时上游返回业务提示，不视为致命错误。
-func (c *UpstreamClient) GrowthAcceptTasks(acc *model.Account, codes []string) error {
+func (c *UpstreamClient) GrowthAcceptTasks(ctx context.Context, acc *model.Account, codes []string) error {
 	if len(codes) == 0 {
 		return nil
 	}
-	_, err := c.growthDo(acc, http.MethodPost, growthBase()+growthAcceptPath,
+	_, err := c.growthDo(ctx, acc, http.MethodPost, growthBase()+growthAcceptPath,
 		map[string]any{"task_codes": codes})
 	return err
 }
@@ -174,9 +175,9 @@ func (c *UpstreamClient) GrowthAcceptTasks(acc *model.Account, codes []string) e
 //
 // 端点：POST {webBase}/activity/growth/tasks/<task_code>/claim
 // 任务码在路径、无 body，必须带 x-client-platform: web。已领取时返回 (0,0,nil)（幂等）。
-func (c *UpstreamClient) GrowthClaimReward(acc *model.Account, taskCode string) (int64, int64, error) {
+func (c *UpstreamClient) GrowthClaimReward(ctx context.Context, acc *model.Account, taskCode string) (int64, int64, error) {
 	url := webBase() + "/activity/growth/tasks/" + taskCode + "/claim"
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -228,7 +229,7 @@ func (c *UpstreamClient) GrowthClaimReward(acc *model.Account, taskCode string) 
 // 事件不计入任务进度。这是最容易踩的坑。
 //
 // 注意：必须 await accept 之后再上报，否则 progress.target 恒为 0、不计数。
-func (c *UpstreamClient) ReportChatActivity(acc *model.Account, conversationID, modelID, modelName string) error {
+func (c *UpstreamClient) ReportChatActivity(ctx context.Context, acc *model.Account, conversationID, modelID, modelName string) error {
 	if conversationID == "" {
 		conversationID = fmt.Sprintf("cbgw-%d", time.Now().UnixNano())
 	}
@@ -253,11 +254,11 @@ func (c *UpstreamClient) ReportChatActivity(acc *model.Account, conversationID, 
 		"agentName": "default", "agentType": "conversation",
 		"userId": acc.UID(),
 	}
-	return c.reportEvents(acc, []any{ev})
+	return c.reportEvents(ctx, acc, []any{ev})
 }
 
 // reportEvents 向 /v2/report 批量上报事件数组。
-func (c *UpstreamClient) reportEvents(acc *model.Account, events []any) error {
+func (c *UpstreamClient) reportEvents(ctx context.Context, acc *model.Account, events []any) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -265,7 +266,7 @@ func (c *UpstreamClient) reportEvents(acc *model.Account, events []any) error {
 	if err != nil {
 		return err
 	}
-	req, err := newJSONPost(growthBase()+reportPath, raw)
+	req, err := newJSONPost(ctx, growthBase()+reportPath, raw)
 	if err != nil {
 		return err
 	}
@@ -278,8 +279,8 @@ func (c *UpstreamClient) reportEvents(acc *model.Account, events []any) error {
 // ---------------------------------------------------------------------------
 
 // newJSONPost 构造一个带 JSON body 的 POST 请求。
-func newJSONPost(url string, raw []byte) (*http.Request, error) {
-	return http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+func newJSONPost(ctx context.Context, url string, raw []byte) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 }
 
 // webHeaders 注入 Web 来源端标记。缺 x-client-platform 的请求会被上游按

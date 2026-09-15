@@ -33,7 +33,7 @@ func TaskList(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tasks, err := taskClient().GrowthListTasks(acc)
+	tasks, err := taskClient().GrowthListTasks(c.Request.Context(), acc)
 	if err != nil {
 		response.Fail(c, "拉取任务列表失败: "+err.Error())
 		return
@@ -64,7 +64,7 @@ func TaskRun(c *gin.Context) {
 	var req taskRunReq
 	// body 可为空（跑全部），解析失败不报错。
 	_ = c.ShouldBindJSON(&req)
-	summary := taskClient().RunAccountTasks(acc, req.Codes)
+	summary := taskClient().RunAccountTasks(c.Request.Context(), acc, req.Codes)
 	response.Success(c, summary)
 }
 
@@ -79,7 +79,7 @@ func TaskClaim(c *gin.Context) {
 		response.Fail(c, "缺少任务码")
 		return
 	}
-	credit, energy, err := taskClient().GrowthClaimReward(acc, code)
+	credit, energy, err := taskClient().GrowthClaimReward(c.Request.Context(), acc, code)
 	if err != nil {
 		response.Fail(c, "领取失败: "+err.Error())
 		return
@@ -96,7 +96,7 @@ func TaskAcceptAll(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tasks, err := taskClient().GrowthListTasks(acc)
+	tasks, err := taskClient().GrowthListTasks(c.Request.Context(), acc)
 	if err != nil {
 		response.Fail(c, "拉取任务列表失败: "+err.Error())
 		return
@@ -115,7 +115,7 @@ func TaskAcceptAll(c *gin.Context) {
 		response.Success(c, gin.H{"accepted": 0, "message": "没有待接受的任务"})
 		return
 	}
-	if err := taskClient().GrowthAcceptTasks(acc, codes); err != nil {
+	if err := taskClient().GrowthAcceptTasks(c.Request.Context(), acc, codes); err != nil {
 		response.Fail(c, "报名失败: "+err.Error())
 		return
 	}

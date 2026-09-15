@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -72,7 +73,7 @@ func deriveAccountID(acc *model.Account, purpose string) string {
 }
 
 // reportDesktopEvents 以桌面指纹批量上报事件。
-func (c *UpstreamClient) reportDesktopEvents(acc *model.Account, events ...desktopEvent) error {
+func (c *UpstreamClient) reportDesktopEvents(ctx context.Context, acc *model.Account, events ...desktopEvent) error {
 	if len(events) == 0 {
 		return fmt.Errorf("no events")
 	}
@@ -89,7 +90,7 @@ func (c *UpstreamClient) reportDesktopEvents(acc *model.Account, events ...deskt
 		}
 		arr = append(arr, m)
 	}
-	return c.reportEvents(acc, arr)
+	return c.reportEvents(ctx, acc, arr)
 }
 
 // desktopChatSequence 构造一次「桌面端成功对话」的完整事件链。
@@ -267,7 +268,7 @@ func desktopAutomationCreateEvent(name string) desktopEvent {
 }
 
 // webEvent 是 Web 域事件（不同于桌面指纹，走 x-client-platform: web）。
-func (c *UpstreamClient) reportWebEvent(acc *model.Account, eventCode, pageURL, elementID, elementName string) error {
+func (c *UpstreamClient) reportWebEvent(ctx context.Context, acc *model.Account, eventCode, pageURL, elementID, elementName string) error {
 	const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 	ev := map[string]any{
@@ -279,16 +280,16 @@ func (c *UpstreamClient) reportWebEvent(acc *model.Account, eventCode, pageURL, 
 		"userNickname": acc.Name,
 	}
 	// Web 事件同样走 /v2/report，但来源域是官网。
-	return c.reportEventsWeb(acc, []any{ev}, pageURL)
+	return c.reportEventsWeb(ctx, acc, []any{ev}, pageURL)
 }
 
 // reportEventsWeb 以 Web 端身份上报（补 x-client-platform / Origin / Referer）。
-func (c *UpstreamClient) reportEventsWeb(acc *model.Account, events []any, referer string) error {
+func (c *UpstreamClient) reportEventsWeb(ctx context.Context, acc *model.Account, events []any, referer string) error {
 	raw, err := json.Marshal(events)
 	if err != nil {
 		return err
 	}
-	req, err := newJSONPost(webBase()+reportPath, raw)
+	req, err := newJSONPost(ctx, webBase()+reportPath, raw)
 	if err != nil {
 		return err
 	}
@@ -301,12 +302,12 @@ func (c *UpstreamClient) reportEventsWeb(acc *model.Account, events []any, refer
 //
 // 端点是 /v2/user-asset/appearance/set —— 不是看起来更"合理"的
 // /v2/plugin/appearance/set（那条路径 404）。实测确认。
-func (c *UpstreamClient) setAppearanceTheme(acc *model.Account, resourceKey string) error {
+func (c *UpstreamClient) setAppearanceTheme(ctx context.Context, acc *model.Account, resourceKey string) error {
 	raw, err := json.Marshal(map[string]string{"kind": "theme", "resource_key": resourceKey})
 	if err != nil {
 		return err
 	}
-	req, err := newJSONPost(growthBase()+"/v2/user-asset/appearance/set", raw)
+	req, err := newJSONPost(ctx, growthBase()+"/v2/user-asset/appearance/set", raw)
 	if err != nil {
 		return err
 	}
@@ -324,7 +325,7 @@ type marketExpert struct {
 }
 
 // marketExpertList 拉取专家市场列表。专家 ID 必须真实存在，自造 ID 不计数。
-func (c *UpstreamClient) marketExpertList(acc *model.Account, expertType string) ([]marketExpert, error) {
+func (c *UpstreamClient) marketExpertList(ctx context.Context, acc *model.Account, expertType string) ([]marketExpert, error) {
 	body := map[string]any{"page": 1, "page_size": 20, "sort_by": "reco_rank", "sort_order": "desc"}
 	if expertType != "" {
 		body["expert_type"] = expertType
@@ -333,7 +334,7 @@ func (c *UpstreamClient) marketExpertList(acc *model.Account, expertType string)
 	if err != nil {
 		return nil, err
 	}
-	req, err := newJSONPost(growthBase()+"/portal/operation-platform/market/expert/list", raw)
+	req, err := newJSONPost(ctx, growthBase()+"/portal/operation-platform/market/expert/list", raw)
 	if err != nil {
 		return nil, err
 	}
