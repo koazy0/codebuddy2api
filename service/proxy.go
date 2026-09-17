@@ -533,6 +533,14 @@ func (p *Proxy) recordUsage(acc *model.Account, meta *ChatRequestMeta, start tim
 			}
 		}
 	}
+	// 成本账本：记录该账号跑该模型的实测单价，供下次选号优先挑免费的。
+	//
+	// 只记上游真回了 usage 的请求：tokens 为 0 时可能是响应缺 usage 字段，
+	// 那种情况记成「0 单价」会把未知误判成免费，让这个号垄断该模型流量。
+	// 这一条同时覆盖免费观测（credit=0 且 tokens>0 才是真的免费）。
+	if usage.TotalTokens > 0 {
+		NoteModelCost(acc.ID, meta.UpstreamModel, usage.Credit, usage.TotalTokens)
+	}
 	_ = model.CreateUsageLog(log)
 }
 

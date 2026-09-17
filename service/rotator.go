@@ -60,6 +60,19 @@ func (r *Rotator) NextFor(exclude map[uint]struct{}, modelName string) (*model.A
 		return nil, fmt.Errorf("no available codebuddy account")
 	}
 
+	// 成本分层硬过滤：同样能跑，优先挑不花钱的号。
+	//
+	// 上游对不同账号在同一模型上的计费不一致（实测同名模型跨账号单价可差
+	// 数十倍），而是否收费只能靠响应里的 credit 观察，无法从配置推断。
+	// 这里按实测结果分层，只保留最优层：
+	//   有免费号 → 只用免费号；
+	//   没有免费的 → 退到无观测的号（其中可能藏着尚未发现是免费的）；
+	//   只有收费观测 → 用最便宜那层。
+	//
+	// 用硬过滤而非仅排序，是因为后面各模式都会在候选内挑（sticky 粘号、
+	// round_robin 轮转）。只排序的话收费号仍会被选中，达不到「优先免费」。
+	candidates = filterByCostTier(candidates, modelName)
+
 	mode := rotateMode()
 	var picked model.Account
 	switch mode {
@@ -73,6 +86,44 @@ func (r *Rotator) NextFor(exclude map[uint]struct{}, modelName string) (*model.A
 		picked = pickSticky(candidates, r.sticky[modelName])
 	}
 	return cloneAccount(picked), nil
+}
+
+// filterByCostTier 只保留成本最优的那一层候选。
+//
+// 模型名为空（未指定模型，如无模型上下文的调用）时不分层——成本是按
+// (账号, 模型) 观测的，没有模型就无从判定，硬分层会误伤。
+//
+// 全部候选同层时原样返回（最常见情况：都没观测），不重建切片。
+func filterByCostTier(candidates []model.Account, modelName string) []model.Account {
+	if modelName == "" || len(candidates) <= 1 {
+		return candidates
+	}
+	best := costTierPaid
+	same := true
+	tiers := make([]costTier, len(candidates))
+	for i := range candidates {
+		ti, _ := defaultCostLedger.tierOf(candidates[i].ID, modelName)
+		tiers[i] = ti
+		if ti < best {
+			best = ti
+		}
+		if i > 0 && ti != tiers[0] {
+			same = false
+		}
+	}
+	if same {
+		return candidates
+	}
+	kept := make([]model.Account, 0, len(candidates))
+	for i := range candidates {
+		if tiers[i] == best {
+			kept = append(kept, candidates[i])
+		}
+	}
+	if len(kept) == 0 {
+		return candidates
+	}
+	return kept
 }
 
 func (r *Rotator) MarkSuccess(acc *model.Account) {

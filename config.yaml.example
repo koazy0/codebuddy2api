@@ -11,7 +11,12 @@ gateway:
     inject-reasoning: false
     timeout-seconds: 300
     max-retries: 3
-    rotate: sticky  # 同一模型粘在一个号上吃缓存；额度/模型配额用尽再切下一个
+    # 选号模式：sticky（同模型粘号）/ least_used / round_robin。
+    # 无论哪种模式，都会先按「实测成本」过滤候选——优先挑跑该模型不花钱的号。
+    # 成本从响应 usage.credit 实测得出（各账号在同一模型上的计费并不一致），
+    # 观测 6 小时过期，避免夜间免费的号白天仍被当成免费。
+    # 同一模型粘在一个号上吃缓存；额度/模型配额用尽再切下一个。
+    rotate: sticky
     trust-env-proxy: false
     proxy: ""
     model-alias:

@@ -17,7 +17,8 @@
 - **Codex 原生兼容**（本项目最大差异点）：Codex CLI 不是简单的 Chat Completions 客户端。它会带超长系统提示、`developer` 角色、`namespace` / `custom` 工具（`exec` grammar、`multi_agent_v1`、`apply_patch`）。本网关会在出站前把这些收成 CodeBuddy 吃得下的 Chat Completions：清洗掉会触发 WAF（`11128`）的 harness 文本（system/developer 品牌指纹、harness 注入的 user 上下文、tool 描述，`full` 档再加 assistant 历史与 tool 输出），用户真实提问与 Codex 身份、工作方式原样透传；把 namespace / custom 工具展开成标准 function；`developer` 映射为 `system`；WAF 拒绝时把请求清得更干净重发一次，而不是换号或冷却账号。效果是 Codex 能真正 `exec_command`、改文件、派子 agent，体感仍是原生 Codex。
 - **协议兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，工具调用一起转，Codex / Claude Code / Cherry Studio 直接接。
 - **实时模型目录**：`GET /v1/models` 透传上游 `/v3/config`，不是本地写死的名单。
-- **多账号轮换**：`round_robin` / `least_used`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
+- **多账号轮换**：`round_robin` / `least_used` / `sticky`，额度耗尽自动跳过，失败按 `max-retries` 换号重试。
+- **按实测成本选号**：上游对不同账号在同一模型上的计费并不一致（实测同名模型跨账号单价可差数十倍），而是否收费只能从响应里的 `usage.credit` 观察得到——限免、夜间免费、试用期都只体现在这里。网关按 `(账号, 模型)` 记录实测单价并分层，**优先挑免费号**：有免费号就只用免费号，没有就退到尚未观测的号（其中可能藏着还没发现是免费的）。观测 6 小时过期，避免夜间免费的号白天仍被当成免费。`GET /admin/cost-ledger` 可查看账本规模。
 - **积分任务中心**：一键完成成长中心的任务并自动领奖。任务是靠**行为事件**计分而非 UI 操作，所以实现走的是「报名 → 上报事件链 → 等计分 → 领奖」四阶段，全程纯 API、幂等，重复点不会重复加分。实测单个新账号可完成 15+ 个任务、到账约 1550 分 / 70 能量。
 - **官方登录入库**：`auth login` 走 `POST /v2/plugin/auth/state`，再轮询 `GET /v2/plugin/auth/token`；JSON 导入按 jwt / username upsert。
 - **刷新票据**：`POST /v2/plugin/auth/token/refresh`。默认每天 03:00 扫描，JWT 剩余不足 30 天就续；请求前也会预刷新。

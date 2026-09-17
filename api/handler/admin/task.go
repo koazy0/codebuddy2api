@@ -186,3 +186,15 @@ func TaskBatchStatus(c *gin.Context) {
 	}
 	response.Success(c, state)
 }
+
+// CostLedger 返回实测成本账本的规模与分层结果，供排障判断选号分层是否合理。
+//
+// 为什么需要这个端点：tier 硬过滤是黑盒行为——线上如果发现
+// 「某个模型总是只用少数几个号」，得能看出是免费号垄断还是分层出错了。
+func CostLedger(c *gin.Context) {
+	total, free, paid := service.CostLedgerStats()
+	response.Success(c, gin.H{
+		"total": total, "free": free, "paid": paid,
+		"ttl_minutes": 360,
+	})
+}
