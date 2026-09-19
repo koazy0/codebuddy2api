@@ -163,8 +163,29 @@ func ParseUserResource(raw []byte) (*model.CreditSnapshot, error) {
 	packages := make([]map[string]any, 0, len(accounts))
 	for _, acc := range accounts {
 		typ := asInt(acc["CapacityType"])
-		remain := firstFloat(acc["CycleCapacityRemainPrecise"], acc["CapacityRemainPrecise"], acc["CycleCapacityRemain"], acc["CapacityRemain"])
-		total := firstFloat(acc["CycleCapacitySize"], acc["CapacitySizePrecise"], acc["CapacitySize"])
+		// 可用额度取 CycleCapacityRemain，**不能取 CapacityRemain**。
+		//
+		// 这两个字段的含义在实测中确认过，容易搞反：
+		//   CapacityRemain*      = 整个套餐包从发放至今的剩余（对体验版恒 500）
+		//   CycleCapacityRemain* = **本计费周期的剩余**，也就是真正能用的额度
+		//
+		// 证据：`CycleCapacityUsed = 500` 且 `CycleCapacityRemain = 0` 的账号，
+		// 实际调用一律返回 429「额度已用尽」；而它们 CapacityRemain 仍显示 500。
+		// 也就是说 CapacityRemain 在这个套餐上从不随消耗递减，用它判断可用额度
+		// 会把「已耗尽」读成「还剩 500」——这正是「显示有额度、一发就报耗尽」的根源。
+		//
+		// 历史注记：这里本来取的就是 Cycle*（方向正确），中途曾误改为
+		// CapacityRemain 优先，反而制造了上述假额度，故回退并固化结论。
+		remain, hasCycle := pickRemain(acc)
+		// 兜底只在**周期字段整体缺失**时生效（上游改字段名），
+		// 不能因为「值为 0」就回落到整包——那会把已耗尽的账号误判成有额度。
+		if !hasCycle {
+			remain = firstFloat(acc["CapacityRemainPrecise"], acc["CapacityRemain"])
+		}
+		total := firstFloat(acc["CycleCapacitySize"], acc["CycleCapacitySizePrecise"])
+		if total == 0 {
+			total = firstFloat(acc["CapacitySizePrecise"], acc["CapacitySize"])
+		}
 		item := map[string]any{
 			"package_name":  fmt.Sprint(acc["PackageName"]),
 			"capacity_type": typ,
@@ -260,4 +281,20 @@ func parseCreditTime(raw string) *time.Time {
 		}
 	}
 	return nil
+}
+
+// pickRemain 取该套餐包的可用额度。
+//
+// 返回 (剩余额度, 周期字段是否存在)。用「字段是否存在」而不是「值是否为 0」
+// 决定要不要回落——这一点是这个函数存在的全部理由：
+// 周期剩余为 0 是**有意义的结果**（额度已耗尽），若按值回落，就会把
+// 「已耗尽」误判成「整包还剩 500」，正是线上假额度的成因。
+func pickRemain(acc map[string]any) (float64, bool) {
+	if v, ok := acc["CycleCapacityRemainPrecise"]; ok {
+		return firstFloat(v), true
+	}
+	if v, ok := acc["CycleCapacityRemain"]; ok {
+		return firstFloat(v), true
+	}
+	return 0, false
 }
