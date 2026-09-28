@@ -832,6 +832,14 @@ func isUnapprovedChannel(raw []byte) bool {
 	return classifyUpstreamRejection(raw) == rejectionUnapprovedChannel
 }
 
+// isContentFiltered 判断上游是否以「内容安全审核」为由拒绝。
+//
+// 与 isUnapprovedChannel 分开暴露，是因为两者触发条件不同但处置相同：
+// 都要降级清洗后重发，且都不能把账号打进冷却。
+func isContentFiltered(raw []byte) bool {
+	return classifyUpstreamRejection(raw) == rejectionContentFiltered
+}
+
 func isUpstreamModelUnavailable(raw []byte) bool {
 	return classifyUpstreamRejection(raw) == rejectionModelUnauthorized
 }
@@ -856,6 +864,16 @@ const (
 )
 
 // contentFilteredMarkers 内容审核命中的文案特征。
+//
+// 覆盖中英文与多种错误码。上游的安全审核有至少两套入口，文案并不统一：
+//
+//	11128  "Illegal API invocation from an unapproved channel"  （WAF 指纹）
+//	11140  "Content failed safety review. Please revise it"
+//	       / "内容未通过安全审核，请修改"                       （内容审核）
+//
+// 后者在 dsh（DeepSeek Harness）链路上是主要拦截方式，且文案里既没有
+// "content filter" 也没有 "sensitive"——只靠这几个词会整类漏掉，
+// 表现为「被拿下但不降级重试，直接把 403 抛给客户端」。
 var contentFilteredMarkers = []string{
 	"content filter",
 	"content_filter",
@@ -866,6 +884,12 @@ var contentFilteredMarkers = []string{
 	"12200",
 	"11103",
 	"11104",
+	// 11140：内容安全审核（中英文文案都列，避免只匹配到一半）
+	"11140",
+	"safety review",
+	"未通过安全审核",
+	"安全审核",
+	"please revise",
 }
 
 // classifyUpstreamRejection 把上游错误体归类。

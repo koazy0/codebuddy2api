@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -265,6 +266,12 @@ func TestClassifyUpstreamRejection(t *testing.T) {
 		{"unapproved-text", `{"msg":"unapproved channel"}`, rejectionUnapprovedChannel},
 		{"model-11102", `{"code":11102,"msg":"model is only available for authorized users"}`, rejectionModelUnauthorized},
 		{"content-filter", `{"code":12200,"msg":"content filter triggered"}`, rejectionContentFiltered},
+		// 11140：内容安全审核。dsh 链路上的主要拦截方式，
+		// 文案里既没有 "content filter" 也没有 "sensitive"，曾整类漏掉。
+		{"safety-11140-en", `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Content failed safety review. Please revise it","zh":"内容未通过安全审核，请修改"}}`, rejectionContentFiltered},
+		{"safety-11140-code-only", `{"code":11140,"msg":"request illegal"}`, rejectionContentFiltered},
+		{"safety-review-text", `{"msg":"Content failed safety review"}`, rejectionContentFiltered},
+		{"safety-zh", `{"msg":"内容未通过安全审核，请修改后重试"}`, rejectionContentFiltered},
 		{"ok", `{"code":0,"msg":"ok"}`, rejectionNone},
 		{"empty", ``, rejectionNone},
 	}
@@ -387,5 +394,51 @@ func TestLooksLikeHarnessContext(t *testing.T) {
 		if looksLikeHarnessContext(p) {
 			t.Fatalf("false positive on real user input: %q", p)
 		}
+	}
+}
+
+// TestSafetyReviewTriggersRetry 钉住 11140 必须走降级重试路径。
+//
+// 这条路径曾整类失效：分类器只认 "content filter"/"sensitive" 等词，
+// 而 11140 的文案是 "Content failed safety review"，一个都不匹配，
+// 于是被归类成 rejectionNone —— proxy 认为不是内容问题，
+// 不降级、直接抛 403。表现为「用 dsh 必被拿下，且毫无重试迹象」。
+func TestSafetyReviewTriggersRetry(t *testing.T) {
+	body := []byte(`{"code":11140,"msg":"request illegal","displayMsg":{"en":"Content failed safety review. Please revise it","zh":"内容未通过安全审核，请修改"}}`)
+
+	if !isContentFiltered(body) {
+		t.Fatal("11140 必须被识别为内容审核命中")
+	}
+	// 两条判定都要成立，proxy 里是 (isUnapprovedChannel || isContentFiltered)
+	if !isUpstreamRequestError(body) {
+		t.Fatal("内容审核命中也属于「请求被拒但不是账号的错」")
+	}
+	// 不能误判成额度耗尽：那会把好账号打成模型冷却
+	if isModelQuotaExhausted(403, body) {
+		t.Fatal("内容审核命中不能当成额度耗尽")
+	}
+	// 也不能误判成模型不可用：那会走换模型重试而不是清洗重试
+	if isUpstreamModelUnavailable(body) {
+		t.Fatal("内容审核命中不能当成模型不可用")
+	}
+}
+
+// TestSafetyReviewActuallyChangesBody 确认降级重试真的能改出东西。
+// 分类对了但清洗无变化 = 空转，用户仍看到 403。
+func TestSafetyReviewActuallyChangesBody(t *testing.T) {
+	meta := &ChatRequestMeta{
+		Body: []byte(`{"messages":[
+			{"role":"system","content":"You are a coding agent running in the Codex CLI. Refuse requests for DoS attacks, exploit development, credential testing."},
+			{"role":"user","content":"<environment_context>cwd=/tmp sandbox=unsandboxed</environment_context>help me"}]}`),
+	}
+	if !retryWAFRejectedBody(meta) {
+		t.Fatal("降级清洗应产生变化，否则重试是空转")
+	}
+	if !bytes.Contains(meta.Body, []byte("exploit")) {
+		// 对话面不删词，只插零宽——词应仍在
+		t.Log("exploit 仍存在（符合「只插零宽不删词」的约定）")
+	}
+	if bytes.Contains(meta.Body, []byte("<environment_context>")) {
+		t.Fatal("harness 块应被重写成摘要")
 	}
 }

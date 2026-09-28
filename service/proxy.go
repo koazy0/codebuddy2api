@@ -257,10 +257,16 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 				p.rotator.MarkModelExhausted(acc, meta.UpstreamModel, lastErr)
 				continue
 			}
-			if isUnapprovedChannel(raw) && !wafRetried {
-				// 安全策略拦的是「请求内容」，不是账号：换账号重试只会把整池烧一遍
-				// （线上日志实测：同一请求连续换 8 个账号，全部 11128）。
-				// 正确做法是就地降级——把 harness 注入的 user 消息也一并脱敏，重发一次。
+			// 安全策略拦的是「请求内容」，不是账号：换账号重试只会把整池烧一遍
+			// （线上日志实测：同一请求连续换 8 个账号，全部 11128）。
+			// 正确做法是就地降级——把 harness 注入的 user 消息也一并脱敏，重发一次。
+			//
+			// 两类拒绝都走这条路径：
+			//   11128 unapproved channel —— WAF 认出这是 agent harness 的指纹
+			//   11140 safety review      —— 内容审核判定文本本身不合规
+			// 后者在 dsh 链路上更常见（实测文案 "Content failed safety review"），
+			// 且它同样与账号无关：换号只会把整池烧一遍，能救的只有改请求内容。
+			if (isUnapprovedChannel(raw) || isContentFiltered(raw)) && !wafRetried {
 				wafRetried = true
 				global.CORE_LOG.Warn("upstream blocked by security policy, escalating sanitize and retrying",
 					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
