@@ -12,6 +12,7 @@ import (
 	"codebuddy-gateway/global"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type streamAdapter interface {
@@ -907,14 +908,42 @@ func (s *sseSink) Write(p []byte) (int, error) {
 	// 出站统一剥掉脱敏用的不可见标记，避免零宽随代码泄漏进用户工程。
 	clean := stripInvisibleFromFrame(p)
 	n, err := s.w.Write(clean)
-	if err == nil && s.flusher != nil {
-		s.flusher.Flush()
-	}
+	// Flush 必须 recover：panic 会直接掀掉整个进程。
+	//
+	// gin 的 responseWriter.Flush 内部是 `w.ResponseWriter.(http.Flusher).Flush()`，
+	// 不带 ok 检查——底层 writer 不支持 Flush 时（HTTP/1.0、或链路里某层包装把
+	// Flusher 丢了）这里就是 nil 解引用。而 `c.Writer.(http.Flusher)` 对 gin 恒为真，
+	// 因为它自己的 responseWriter 实现了这个方法，所以在调用点判 nil 拦不住。
+	//
+	// 线上实测：客户端断开/降级连接后，心跳 goroutine 仍按 15s 节奏往已失效的
+	// writer 上写，命中该路径导致 SIGSEGV、进程退出、全部在途请求断掉。
+	s.safeFlush()
 	// 返回原始长度：调用方关心的是「它给的字节被接受了」，而不是清理后的长度。
 	if err == nil && n == len(clean) {
 		return len(p), nil
 	}
 	return n, err
+}
+
+// safeFlush 在锁内调用，带 panic 兜底。
+//
+// Flush 失败只是流式体验降级（不实时吐字），不值得为此牺牲进程。
+func (s *sseSink) safeFlush() {
+	if s.flusher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			// 只记一条 debug：底层 writer 不可写时每次 Write 都会走到这里，
+			// 不节流会把日志刷爆。logger 可能未初始化（测试/极早期启动），
+			// 此时宁可不记也不能在 recover 里再次 panic。
+			if global.CORE_LOG != nil {
+				global.CORE_LOG.Debug("sse flush panicked, ignoring",
+					zap.Any("panic", r))
+			}
+		}
+	}()
+	s.flusher.Flush()
 }
 
 func (s *sseSink) Flush() {
@@ -923,9 +952,7 @@ func (s *sseSink) Flush() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.flusher != nil {
-		s.flusher.Flush()
-	}
+	s.safeFlush()
 }
 
 // invisibleByteSeqs 是不可见标记的 UTF-8 字节序列，与 sanitize.go 的
@@ -973,13 +1000,23 @@ func startSSEHeartbeat(w io.Writer) func() {
 	return startSSEHeartbeatInterval(w, sseHeartbeatInterval)
 }
 
+// startSSEHeartbeatInterval 启动心跳 goroutine。
+// 返回的 stop 函数会**等待 goroutine 真正退出**后再返回。
+//
+// 为什么必须等：只 close(done) 不够——goroutine 可能已经进入 Write 调用，
+// close 之后它仍会把这一帧写完。若此时底层 ResponseWriter 已失效
+// （客户端断开、请求处理函数已返回），这一写就可能命中 nil 解引用，
+// 而 panic 发生在心跳 goroutine 里，recover 不在同一栈上，会直接掀掉进程。
+// 等待退出可确保「不会再有任何一次 Write 发生」。
 func startSSEHeartbeatInterval(w io.Writer, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = sseHeartbeatInterval
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	var once sync.Once
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -995,5 +1032,6 @@ func startSSEHeartbeatInterval(w io.Writer, interval time.Duration) func() {
 	}()
 	return func() {
 		once.Do(func() { close(done) })
+		<-stopped
 	}
 }
