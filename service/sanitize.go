@@ -828,6 +828,43 @@ func tidySpacing(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// accountRestrictedMarkers 账号被风控的文案特征。
+//
+// 与内容审核同为 11140，但语义完全相反，必须分开处置：
+//
+//	11140 "Content failed safety review"  → 内容问题，改请求内容能救
+//	11140 "restricted due to unusual activity" / "账号存在异常行为"
+//	                                      → 账号被标记，改内容无效，得换号
+//
+// 混在一起的后果：把账号风控当内容问题处理，会对着一个已被标记的账号反复
+// 降级重试（每次必然失败），既浪费上游请求又让用户干等；反之把内容审核当
+// 风控处理，会白白烧掉一批好账号。
+var accountRestrictedMarkers = []string{
+	"unusual activity",
+	"restricted due to",
+	"account has been restricted",
+	"account is restricted",
+	"异常行为",
+	"账号异常",
+	"存在异常",
+	"已被限制",
+	"账号被限制",
+}
+
+// isAccountRestricted 判断上游是否以「账号异常/被限制」为由拒绝。
+func isAccountRestricted(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	low := strings.ToLower(string(raw))
+	for _, m := range accountRestrictedMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func isUnapprovedChannel(raw []byte) bool {
 	return classifyUpstreamRejection(raw) == rejectionUnapprovedChannel
 }
@@ -836,8 +873,26 @@ func isUnapprovedChannel(raw []byte) bool {
 //
 // 与 isUnapprovedChannel 分开暴露，是因为两者触发条件不同但处置相同：
 // 都要降级清洗后重发，且都不能把账号打进冷却。
+// isContentFiltered 判断上游是否以「内容安全审核」为由拒绝。
+//
+// 与 isUnapprovedChannel 分开暴露，是因为两者触发条件不同但处置相同：
+// 都要降级清洗后重发，且都不能把账号打进冷却。
+//
+// 额外接住「403 且带 11140 但文案不全」的情况：上游有时只返回错误码，
+// 没有 displayMsg。那种请求无法区分内容审核与账号风控，按内容处理更安全
+// ——降级重试最多白试一次，误判成风控则会白白烧掉一个好账号。
+// 明确的账号风控由 isAccountRestricted 优先接走，不会走到这里。
 func isContentFiltered(raw []byte) bool {
-	return classifyUpstreamRejection(raw) == rejectionContentFiltered
+	if len(raw) == 0 {
+		return false
+	}
+	if isAccountRestricted(raw) {
+		return false
+	}
+	if classifyUpstreamRejection(raw) == rejectionContentFiltered {
+		return true
+	}
+	return strings.Contains(string(raw), "11140")
 }
 
 func isUpstreamModelUnavailable(raw []byte) bool {
@@ -861,6 +916,9 @@ const (
 	rejectionModelUnauthorized
 	// rejectionContentFiltered：内容审核命中（非 channel 类）。
 	rejectionContentFiltered
+	// rejectionAccountRestricted：账号被风控。与 contentFiltered 同为 11140，
+	// 但处置相反——改请求内容救不回来，必须换号。见 isAccountRestricted。
+	rejectionAccountRestricted
 )
 
 // contentFilteredMarkers 内容审核命中的文案特征。
@@ -884,8 +942,12 @@ var contentFilteredMarkers = []string{
 	"12200",
 	"11103",
 	"11104",
-	// 11140：内容安全审核（中英文文案都列，避免只匹配到一半）
-	"11140",
+	// 11140：内容安全审核（中英文文案都列，避免只匹配到一半）。
+	//
+	// 注意不能只留裸错误码 "11140"：账号风控也返回 11140，靠文案区分。
+	// 若这里命中裸码，账号风控会被误判成内容问题，进而走「降级重试」——
+	// 而对一个已被标记的账号，改请求内容必然失败，只会白白烧请求。
+	// 判定顺序上 isAccountRestricted 先跑（见 proxy），这里的文案仅作补充。
 	"safety review",
 	"未通过安全审核",
 	"安全审核",
@@ -902,6 +964,11 @@ func classifyUpstreamRejection(raw []byte) rejectionKind {
 	s := string(raw)
 	if strings.Contains(s, "11128") {
 		return rejectionUnapprovedChannel
+	}
+	// 账号风控先判：它与内容审核共用 11140，但处置相反（换号 vs 改内容）。
+	// 顺序不能反——反了会把风控当内容问题，对着已标记的账号反复降级。
+	if isAccountRestricted(raw) {
+		return rejectionAccountRestricted
 	}
 	low := strings.ToLower(s)
 	if strings.Contains(low, "unapproved channel") {

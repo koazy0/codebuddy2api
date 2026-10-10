@@ -63,6 +63,9 @@ func PrepareChatBody(raw []byte) (*ChatRequestMeta, error) {
 		}
 	}
 	sanitizeUpstreamChatWithMode(body, global.CORE_CONFIG.Gateway.SanitizeModeName())
+	// system 面处理放在 sanitize 之后：sanitize 负责改词/剪句，这里负责
+	// 整体替换。顺序不能反——先替换再 sanitize 会把网关自己的提示词也洗一遍。
+	applyPromptModeToBody(body)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -257,6 +260,17 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 				p.rotator.MarkModelExhausted(acc, meta.UpstreamModel, lastErr)
 				continue
 			}
+			// 账号被风控：与内容问题相反，改请求内容救不回来，得换号。
+			// 上游文案如 "Your account has been restricted due to unusual activity"。
+			// 这里必须排在内容审核判定之前——两者同为 11140，靠文案区分。
+			if isAccountRestricted(raw) {
+				global.CORE_LOG.Warn("upstream account restricted, excluding account",
+					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
+				// 标记失败让看门狗把它移出可用池，同时本轮到 exclude 里换下一个。
+				p.rotator.MarkFailure(acc, "account restricted: "+lastErr)
+				exclude[acc.ID] = struct{}{}
+				continue
+			}
 			// 安全策略拦的是「请求内容」，不是账号：换账号重试只会把整池烧一遍
 			// （线上日志实测：同一请求连续换 8 个账号，全部 11128）。
 			// 正确做法是就地降级——把 harness 注入的 user 消息也一并脱敏，重发一次。
@@ -272,6 +286,13 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
 				if retryWAFRejectedBody(meta) {
 					// 不排除当前账号：账号本身没问题，换号解决不了内容问题。
+					delete(exclude, acc.ID)
+					i--
+					continue
+				}
+				// sanitize 已无牌可打（full 档洗完没变化），再试最后一招：
+				// 换掉整个 system 面。这能消掉 sanitize 猜不到的客户端模板指纹。
+				if retryWithDegradedPrompt(meta) {
 					delete(exclude, acc.ID)
 					i--
 					continue

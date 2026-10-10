@@ -26,6 +26,24 @@ type Gateway struct {
 	//   "off"                ——完全关闭，仅用于排障对比。
 	// 无论取何值，被上游 11128 拒绝时都会自动升到 full 重发一次。
 	SanitizeMode string `mapstructure:"sanitize-mode" json:"sanitize-mode" yaml:"sanitize-mode"`
+
+	// PromptMode 控制发往上游的 system 面如何处理：
+	//   ""/"passthrough"（默认）——透传客户端原文，不改变既有行为。
+	//   "custom"                ——删除全部 system/developer，换成网关提示词。
+	//   "append"                ——保留客户端原文，在开头插入网关提示词。
+	//
+	// 为什么需要它：Codex CLI / Claude Code / DSH 会往 system prompt 里注入
+	// 固定模板句（agent 声明、工具规范、AGENTS.md、一整套安全声明），上游
+	// 内容审核按这些逐字指纹误杀合法流量。sanitize 做的是「在原文上删改」，
+	// 靠猜哪些句子敏感；本项做的是「整体替换」，从源头消灭指纹。
+	//
+	// passthrough / append 被内容审核拦截时，会自动切到最小中性提示词重试
+	// 一次（降级窗口持续到次日 00:00 CST）。custom 不参与降级——它本身已是替换。
+	PromptMode string `mapstructure:"prompt-mode" json:"prompt-mode" yaml:"prompt-mode"`
+
+	// PromptFile 指定自定义网关提示词文件（PromptMode 为 custom/append 时生效）。
+	// 留空则用内置默认。文件读取失败时回落到内置值，不阻断启动。
+	PromptFile string `mapstructure:"prompt-file" json:"prompt-file" yaml:"prompt-file"`
 }
 
 // SanitizeModeName 归一化配置值，回落到默认力度。

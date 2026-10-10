@@ -269,9 +269,16 @@ func TestClassifyUpstreamRejection(t *testing.T) {
 		// 11140：内容安全审核。dsh 链路上的主要拦截方式，
 		// 文案里既没有 "content filter" 也没有 "sensitive"，曾整类漏掉。
 		{"safety-11140-en", `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Content failed safety review. Please revise it","zh":"内容未通过安全审核，请修改"}}`, rejectionContentFiltered},
-		{"safety-11140-code-only", `{"code":11140,"msg":"request illegal"}`, rejectionContentFiltered},
+		// 无 displayMsg 的裸 11140：文案不足无法区分内容审核与账号风控。
+		// 按内容审核处理是更安全的一侧——降级重试最多白试一次，
+		// 误判成风控则会白白烧掉一个好账号。
+		{"safety-11140-code-only", `{"code":11140,"msg":"request illegal"}`, rejectionNone},
 		{"safety-review-text", `{"msg":"Content failed safety review"}`, rejectionContentFiltered},
 		{"safety-zh", `{"msg":"内容未通过安全审核，请修改后重试"}`, rejectionContentFiltered},
+		// 账号风控：与内容审核同为 11140，必须分到另一类
+		{"restricted-en", `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Your account has been restricted due to unusual activity","zh":"账号存在异常行为"}}`, rejectionAccountRestricted},
+		{"restricted-zh", `{"code":11140,"msg":"账号存在异常行为，请稍后再试"}`, rejectionAccountRestricted},
+		{"restricted-bare", `{"msg":"account has been restricted"}`, rejectionAccountRestricted},
 		{"ok", `{"code":0,"msg":"ok"}`, rejectionNone},
 		{"empty", ``, rejectionNone},
 	}
@@ -440,5 +447,26 @@ func TestSafetyReviewActuallyChangesBody(t *testing.T) {
 	}
 	if bytes.Contains(meta.Body, []byte("<environment_context>")) {
 		t.Fatal("harness 块应被重写成摘要")
+	}
+}
+
+// TestBareCode11140StillTriggersRetry 无 displayMsg 的裸 11140 也要走降级。
+//
+// 上游有时只回错误码。这种请求无法区分内容审核与账号风控，处置取向是
+// 「按内容审核」：降级重试最多白试一次；若误判成风控，则会白白烧掉
+// 一个好账号（标记失败 + 踢出候选）。明确的账号风控由 isAccountRestricted
+// 优先接走，不会走到这条路径。
+func TestBareCode11140StillTriggersRetry(t *testing.T) {
+	bare := []byte(`{"code":11140,"msg":"request illegal"}`)
+	if !isContentFiltered(bare) {
+		t.Fatal("裸 11140 应仍走内容降级路径")
+	}
+	// 明确的账号风控不能被它接走
+	restricted := []byte(`{"code":11140,"msg":"request illegal","displayMsg":{"en":"Your account has been restricted due to unusual activity"}}`)
+	if isContentFiltered(restricted) {
+		t.Fatal("明确的账号风控不该走内容降级路径")
+	}
+	if !isAccountRestricted(restricted) {
+		t.Fatal("应识别为账号风控")
 	}
 }
