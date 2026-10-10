@@ -420,3 +420,33 @@ func MarkAccountCreditExhausted(id uint, until time.Time) error {
 		"last_checked_at": time.Now(),
 	}).Error
 }
+
+// MarkAccountRestricted 把被上游风控的账号转入长期冷却。
+//
+// 为什么不用通用的 MarkAccountFailure：那条路径的冷却是 cooldown-seconds
+// （线上 600 秒），对「账号被标记」这种状态远远不够——10 分钟后放出来，
+// 下一次请求又撞上，再冷却，循环浪费配额与时间。实测有 6 个风控号在
+// 10 分钟窗口内被反复放出。
+//
+// 风控通常按上游的自然周期解除，这里锁到次日 00:00 CST，与 prompt 降级
+// 窗口同一口径：一天只挡一次，不会在同一天内反复抖动。
+func MarkAccountRestricted(id uint, reason string) error {
+	until := nextDay0400(time.Now())
+	return MustDB().Model(&Account{}).Where("id = ?", id).Updates(map[string]any{
+		"status":          AccountStatusCooldown,
+		"last_error":      reason,
+		"fail_count":      0,
+		"cooldown_until":  until,
+		"last_checked_at": time.Now(),
+	}).Error
+}
+
+// nextDay0400 返回本地时区次日 04:00。
+// 与看门狗的额度恢复检查点同一口径（见 service.nextCreditRecoveryTime）。
+func nextDay0400(now time.Time) time.Time {
+	t := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, now.Location())
+	if !t.After(now) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t
+}

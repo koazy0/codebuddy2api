@@ -271,7 +271,9 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			if isAccountRestricted(raw) {
 				global.CORE_LOG.Warn("upstream account restricted, excluding account",
 					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
-				p.rotator.MarkFailure(acc, "account restricted: "+lastErr)
+				// 用长期冷却而不是通用失败计数：风控按上游周期解除，
+				// 600 秒的通用冷却会让它 10 分钟后放出来再撞一次。
+				_ = model.MarkAccountRestricted(acc.ID, "account restricted: "+lastErr)
 				exclude[acc.ID] = struct{}{}
 				i--
 				continue
