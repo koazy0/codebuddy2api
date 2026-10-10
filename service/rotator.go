@@ -8,6 +8,8 @@ import (
 
 	"codebuddy-gateway/global"
 	"codebuddy-gateway/model"
+
+	"go.uber.org/zap"
 )
 
 type Rotator struct {
@@ -57,6 +59,13 @@ func (r *Rotator) NextFor(exclude map[uint]struct{}, modelName string) (*model.A
 		candidates = append(candidates, acc)
 	}
 	if len(candidates) == 0 {
+		// 必须留下痕迹：这个分支一旦触发，客户端只会看到 503，
+		// 而后台若无声息，就无法判断是「真没号」还是「全被过滤掉了」。
+		// 线上实测过整池被风控拖垮时，这里一片静默，排查找不到方向。
+		global.CORE_LOG.Warn("rotator found no candidate account",
+			zap.Int("listed", len(list)),
+			zap.String("model", modelName),
+			zap.Int("excluded", len(exclude)))
 		return nil, fmt.Errorf("no available codebuddy account")
 	}
 

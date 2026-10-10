@@ -263,12 +263,17 @@ func (p *Proxy) relay(c *gin.Context, meta *ChatRequestMeta, path string) {
 			// 账号被风控：与内容问题相反，改请求内容救不回来，得换号。
 			// 上游文案如 "Your account has been restricted due to unusual activity"。
 			// 这里必须排在内容审核判定之前——两者同为 11140，靠文案区分。
+			//
+			// 风控**不占用重试配额**（i 不递增）：配额是留给「换号也许能成」的
+			// 情况，而风控号只是被上游标记、号本身没坏，多跳过一个就少一次机会。
+			// 线上实测：retries=3 时若连撞 3 个风控号就直接 503，而池里还有大量
+			// 可用号——风控是账号级的，却把整池拖垮了。
 			if isAccountRestricted(raw) {
 				global.CORE_LOG.Warn("upstream account restricted, excluding account",
 					zap.Uint("account_id", acc.ID), zap.String("error", lastErr))
-				// 标记失败让看门狗把它移出可用池，同时本轮到 exclude 里换下一个。
 				p.rotator.MarkFailure(acc, "account restricted: "+lastErr)
 				exclude[acc.ID] = struct{}{}
+				i--
 				continue
 			}
 			// 安全策略拦的是「请求内容」，不是账号：换账号重试只会把整池烧一遍
